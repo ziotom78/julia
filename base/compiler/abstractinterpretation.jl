@@ -1990,6 +1990,21 @@ function abstract_call_known(interp::AbstractInterpreter, @nospecialize(f),
         return CallMeta(typevar_tfunc(n, lb_var, ub_var), EFFECTS_UNKNOWN, NoCallInfo())
     elseif f === UnionAll
         return CallMeta(abstract_call_unionall(argtypes), EFFECTS_UNKNOWN, NoCallInfo())
+    elseif f === _typeof_captured_variable
+        la == 2 || return CallMeta(Union{}, false)
+        t = argtypes[2]
+        if t isa Const
+            tv = t.val
+            rt = Const(has_free_typevars(tv) ? typeof(tv) : Core.Typeof(tv))
+        elseif isType(t)
+            tv = t.parameters[1]
+            rt = Const(has_free_typevars(tv) ? typeof(tv) : Core.Typeof(tv))
+        elseif !hasintersect(t, Type)
+            rt = typeof_tfunc(t)
+        else
+            rt = DataType
+        end
+        return CallMeta(rt, false)
     elseif f === Tuple && la == 2
         aty = argtypes[2]
         ty = isvarargtype(aty) ? unwrapva(aty) : widenconst(aty)
