@@ -486,6 +486,13 @@ function insert_node!(ir::IRCode, pos::Int, @nospecialize(typ), @nospecialize(va
     return SSAValue(length(ir.stmts) + node.idx)
 end
 
+function copy_inst!(ir::IRCode, to::Int, inst::Instruction, attach_after::Bool=false)
+    node = add!(ir.new_nodes, to, attach_after)
+    node[] = inst
+    return SSAValue(length(ir.stmts) + node.idx)
+end
+
+
 # For bootstrapping
 function my_sortperm(v)
     p = Vector{Int}(undef, length(v))
