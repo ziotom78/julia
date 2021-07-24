@@ -728,11 +728,18 @@ Base.zero(x::T12960) = T12960()
 let
     A = sparse(1.0I, 3, 3)
     B = similar(A, T12960)
-    @test sprint(show, B)  == "\n #undef             ⋅            ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef"
-    @test sprint(print, B) == "\n #undef             ⋅            ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef"
+    @test repr(B) == "sparse([1, 2, 3], [1, 2, 3], $T12960[#undef, #undef, #undef], 3, 3)"
+    @test occursin(
+        "\n #undef             ⋅            ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef",
+        repr(MIME("text/plain"), B),
+    )
+
     B[1,2] = T12960()
-    @test sprint(show, B)  == "\n #undef          T12960()        ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef"
-    @test sprint(print, B) == "\n #undef          T12960()        ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef"
+    @test repr(B)  == "sparse([1, 1, 2, 3], [1, 2, 2, 3], $T12960[#undef, $T12960(), #undef, #undef], 3, 3)"
+    @test occursin(
+        "\n #undef          T12960()        ⋅    \n       ⋅      #undef             ⋅    \n       ⋅            ⋅      #undef",
+        repr(MIME("text/plain"), B),
+    )
 end
 
 # issue #13127
@@ -2296,4 +2303,20 @@ end
     @test replstr([[1;]]) == "1-element Vector{Vector{$Int}}:\n [1]"
     @test replstr([[1;;]]) == "1-element Vector{Matrix{$Int}}:\n [1;;]"
     @test replstr([[1;;;]]) == "1-element Vector{Array{$Int, 3}}:\n [1;;;]"
+end
+
+@testset "ncat and nrow" begin
+    @test_repr "[1;;]"
+    @test_repr "[1;;;]"
+    @test_repr "[1;; 2]"
+    @test_repr "[1;;; 2]"
+    @test_repr "[1;;; 2 3;;; 4]"
+    @test_repr "[1;;; 2;;;; 3;;; 4]"
+
+    @test_repr "T[1;;]"
+    @test_repr "T[1;;;]"
+    @test_repr "T[1;; 2]"
+    @test_repr "T[1;;; 2]"
+    @test_repr "T[1;;; 2 3;;; 4]"
+    @test_repr "T[1;;; 2;;;; 3;;; 4]"
 end

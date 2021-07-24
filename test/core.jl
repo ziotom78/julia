@@ -997,6 +997,8 @@ end
 # Module() constructor
 @test names(Module(:anonymous), all = true, imported = true) == [:anonymous]
 @test names(Module(:anonymous, false), all = true, imported = true) == [:anonymous]
+@test Module(:anonymous, false, true).Core == Core
+@test_throws UndefVarError Module(:anonymous, false, false).Core
 
 # exception from __init__()
 let didthrow =
@@ -7217,13 +7219,28 @@ end
 struct B33954
     x::Q33954{B33954}
 end
-@test_broken isbitstype(Tuple{B33954})
-@test_broken isbitstype(B33954)
+@test isbitstype(Tuple{B33954})
+@test isbitstype(B33954)
+
+struct A41503{d}
+    e::d
+end
+struct B41503{j,k} <: AbstractArray{A41503{B41503{Any,k}},Any}
+    l::k
+end
+@test !isbitstype(B41503{Any,Any})
+@test_broken isbitstype(B41503{Any,Int})
 
 struct B40050 <: Ref{Tuple{B40050}}
 end
 @test string((B40050(),)) == "($B40050(),)"
 @test_broken isbitstype(Tuple{B40050})
+
+# issue #41654
+struct X41654 <: Ref{X41654}
+end
+@test isbitstype(X41654)
+@test ('a'=>X41654(),)[1][2] isa X41654
 
 # Issue #34206/34207
 function mre34206(a, n)
