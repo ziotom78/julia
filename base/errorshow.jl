@@ -63,6 +63,8 @@ function showerror(io::IO, ex::TypeError)
     print(io, "TypeError: ")
     if ex.expected === Bool
         print(io, "non-boolean (", typeof(ex.got), ") used in boolean context")
+    elseif ex.func === Symbol("dict key")
+        print(io, "$(limitrepr(ex.got)) is not a valid key for type $(ex.expected)")
     else
         if isvarargtype(ex.got)
             targs = (ex.got,)
