@@ -270,6 +270,7 @@ typedef struct _jl_code_info_t {
     uint8_t inlineable;
     uint8_t propagate_inbounds;
     uint8_t pure;
+    uint8_t noinfer;
     // uint8 settings
     uint8_t constprop; // 0 = use heuristic; 1 = aggressive; 2 = none
 } jl_code_info_t;
@@ -319,6 +320,7 @@ typedef struct _jl_method_t {
     uint8_t isva;
     uint8_t pure;
     uint8_t is_for_opaque_closure;
+    uint8_t noinfer;
     // uint8 settings
     uint8_t constprop;     // 0x00 = use heuristic; 0x01 = aggressive; 0x02 = none
 

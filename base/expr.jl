@@ -336,10 +336,12 @@ macro noinline(x)
 end
 
 """
-    @pure ex
-    @pure(ex)
+    Base.@pure function f(args...)
+        ...
+    end
+    Base.@pure f(args...) = ...
 
-`@pure` gives the compiler a hint for the definition of a pure function,
+`Base.@pure` gives the compiler a hint for the definition of a pure function,
 helping for type inference.
 
 This macro is intended for internal compiler use and may be subject to changes.
@@ -349,16 +351,16 @@ macro pure(ex)
 end
 
 """
-    @constprop setting ex
-    @constprop(setting, ex)
+    Base.@constprop setting ex
+    Base.@constprop(setting, ex)
 
-`@constprop` controls the mode of interprocedural constant propagation for the
+`Base.@constprop` controls the mode of interprocedural constant propagation for the
 annotated function. Two `setting`s are supported:
 
-- `@constprop :aggressive ex`: apply constant propagation aggressively.
+- `Base.@constprop :aggressive ex`: apply constant propagation aggressively.
   For a method where the return type depends on the value of the arguments,
   this can yield improved inference results at the cost of additional compile time.
-- `@constprop :none ex`: disable constant propagation. This can reduce compile
+- `Base.@constprop :none ex`: disable constant propagation. This can reduce compile
   times for functions that Julia might otherwise deem worthy of constant-propagation.
   Common cases are for functions with `Bool`- or `Symbol`-valued arguments or keyword arguments.
 """
@@ -369,6 +371,39 @@ macro constprop(setting, ex)
     setting === :aggressive && return esc(isa(ex, Expr) ? pushmeta!(ex, :aggressive_constprop) : ex)
     setting === :none && return esc(isa(ex, Expr) ? pushmeta!(ex, :no_constprop) : ex)
     throw(ArgumentError("@constprop $setting not supported"))
+end
+
+"""
+    Base.@noinfer function f(args...)
+        @nospecialize ...
+        ...
+    end
+    Base.@noinfer f(@nospecialize args...) = ...
+
+Tells the compiler to infer `f` using the declared types of `@nospecialize`d arguments.
+This can be used to limit the number of compiler-generated specializations during inference.
+
+# Example
+
+```julia
+julia> f(A::AbstractArray) = g(A)
+f (generic function with 1 method)
+
+julia> @noinline Base.@noinfer g(@nospecialize(A::AbstractArray)) = A[1]
+g (generic function with 1 method)
+
+julia> @code_typed f([1.0])
+CodeInfo(
+1 ─ %1 = invoke Main.g(_2::AbstractArray)::Any
+└──      return %1
+) => Any
+```
+
+In this example, `f` will be inferred for each specific type of `A`,
+but `g` will only be inferred once.
+"""
+macro noinfer(ex)
+    esc(isa(ex, Expr) ? pushmeta!(ex, :noinfer) : ex)
 end
 
 """

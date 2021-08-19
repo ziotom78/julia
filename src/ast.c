@@ -59,8 +59,9 @@ jl_sym_t *static_parameter_sym; jl_sym_t *inline_sym;
 jl_sym_t *noinline_sym; jl_sym_t *generated_sym;
 jl_sym_t *generated_only_sym; jl_sym_t *isdefined_sym;
 jl_sym_t *propagate_inbounds_sym; jl_sym_t *specialize_sym;
+jl_sym_t *nospecialize_sym; jl_sym_t *noinfer_sym;
 jl_sym_t *aggressive_constprop_sym; jl_sym_t *no_constprop_sym;
-jl_sym_t *nospecialize_sym; jl_sym_t *macrocall_sym;
+jl_sym_t *macrocall_sym;
 jl_sym_t *colon_sym; jl_sym_t *hygienicscope_sym;
 jl_sym_t *throw_undef_if_not_sym; jl_sym_t *getfield_undefref_sym;
 jl_sym_t *gc_preserve_begin_sym; jl_sym_t *gc_preserve_end_sym;
@@ -403,6 +404,7 @@ void jl_init_common_symbols(void)
     isdefined_sym = jl_symbol("isdefined");
     nospecialize_sym = jl_symbol("nospecialize");
     specialize_sym = jl_symbol("specialize");
+    noinfer_sym = jl_symbol("noinfer");
     optlevel_sym = jl_symbol("optlevel");
     compile_sym = jl_symbol("compile");
     infer_sym = jl_symbol("infer");

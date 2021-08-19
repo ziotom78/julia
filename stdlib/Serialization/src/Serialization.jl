@@ -79,7 +79,7 @@ const TAGS = Any[
 
 @assert length(TAGS) == 255
 
-const ser_version = 16 # do not make changes without bumping the version #!
+const ser_version = 17 # do not make changes without bumping the version #!
 
 format_version(::AbstractSerializer) = ser_version
 format_version(s::Serializer) = s.version
@@ -418,6 +418,7 @@ function serialize(s::AbstractSerializer, meth::Method)
     serialize(s, meth.nargs)
     serialize(s, meth.isva)
     serialize(s, meth.is_for_opaque_closure)
+    serialize(s, meth.noinfer)
     serialize(s, meth.constprop)
     if isdefined(meth, :source)
         serialize(s, Base._uncompressed_ast(meth, meth.source))
@@ -1015,9 +1016,13 @@ function deserialize(s::AbstractSerializer, ::Type{Method})
     isva = deserialize(s)::Bool
     is_for_opaque_closure = false
     constprop = 0x00
+    noinfer = false
     template_or_is_opaque = deserialize(s)
     if isa(template_or_is_opaque, Bool)
         is_for_opaque_closure = template_or_is_opaque
+        if format_version(s) >= 17
+            noinfer = deserialize(s)::Bool
+        end
         if format_version(s) >= 14
             constprop = deserialize(s)::UInt8
         end
@@ -1039,6 +1044,7 @@ function deserialize(s::AbstractSerializer, ::Type{Method})
         meth.nargs = nargs
         meth.isva = isva
         meth.is_for_opaque_closure = is_for_opaque_closure
+        meth.noinfer = noinfer
         meth.constprop = constprop
         if template !== nothing
             # TODO: compress template
@@ -1168,6 +1174,9 @@ function deserialize(s::AbstractSerializer, ::Type{CodeInfo})
     ci.inlineable = deserialize(s)
     ci.propagate_inbounds = deserialize(s)
     ci.pure = deserialize(s)
+    if format_version(s) >= 17
+        ci.noinfer = deserialize(s)::Bool
+    end
     if format_version(s) >= 14
         ci.constprop = deserialize(s)::UInt8
     end

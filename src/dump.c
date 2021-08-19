@@ -671,6 +671,7 @@ static void jl_serialize_value_(jl_serializer_state *s, jl_value_t *v, int as_li
         write_int8(s->s, m->isva);
         write_int8(s->s, m->pure);
         write_int8(s->s, m->is_for_opaque_closure);
+        write_int8(s->s, m->noinfer);
         write_int8(s->s, m->constprop);
         jl_serialize_value(s, (jl_value_t*)m->slot_syms);
         jl_serialize_value(s, (jl_value_t*)m->roots);
@@ -1526,6 +1527,7 @@ static jl_value_t *jl_deserialize_value_method(jl_serializer_state *s, jl_value_
     m->isva = read_int8(s->s);
     m->pure = read_int8(s->s);
     m->is_for_opaque_closure = read_int8(s->s);
+    m->noinfer = read_int8(s->s);
     m->constprop = read_int8(s->s);
     m->slot_syms = jl_deserialize_value(s, (jl_value_t**)&m->slot_syms);
     jl_gc_wb(m, m->slot_syms);

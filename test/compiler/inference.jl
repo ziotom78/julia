@@ -3457,6 +3457,98 @@ end
     end) == Any[Int]
 end
 
+Base.@noinfer count_specialization(@nospecialize f) = count_specialization(method1(f))
+count_specialization(m::Method) = count(!isnothing, m.specializations)
+Base.@noinfer method1(@nospecialize f) = only(methods(f))
+Base.@noinfer code_typed1(@nospecialize args...) = first(only(code_typed(args...))).code
+using InteractiveUtils: gen_call_with_extracted_types_and_kwargs
+macro code_typed1(ex0...)
+    gen_call_with_extracted_types_and_kwargs(__module__, :code_typed1, ex0)
+end
+
+@testset "compilation annotations" begin
+    M = Module()
+
+    dispatchonly = Any[sin, muladd, "foo", nothing, Dict]   # untyped container can cause excessive runtime dispatch
+    withinfernce = tuple(sin, muladd, "foo", nothing, Dict) # typed container can cause excessive inference
+
+    @eval M begin
+        function invokef(f, itr)
+            local r = 0
+            r += f(itr[1])
+            r += f(itr[2])
+            r += f(itr[3])
+            r += f(itr[4])
+            r += f(itr[5])
+            r
+        end
+        global inline_checker = c -> c # untyped global prevents inlining
+        # if `f` is inlined, `GlobalRef(m, :inline_checker)` should appear within the body of `invokef`
+        function is_inline_checker(@nospecialize stmt)
+            isa(stmt, GlobalRef) && stmt.name === :inline_checker
+        end
+    end
+
+    @testset "@nospecialize" begin
+        @eval M begin
+            function nospecialize(@nospecialize a)
+                c = isa(a, Function)
+                inline_checker(c)
+            end
+
+            @inline function inline_nospecialize(@nospecialize a)
+                c = isa(a, Function)
+                inline_checker(c)
+            end
+        end
+
+        # `@nospecialize` should suppress runtime dispatches of `nospecialize`
+        M.invokef(M.nospecialize, dispatchonly)
+        @test count_specialization(M.nospecialize) == 1
+        # `@nospecialize` should allow inference to happen
+        M.invokef(M.nospecialize, withinfernce)
+        @test count_specialization(M.nospecialize) == 6
+        @test !any(M.is_inline_checker, @code_typed1 M.invokef(M.nospecialize, dispatchonly))
+
+        # `@nospecialize` should allow inlinining
+        M.invokef(M.inline_nospecialize, dispatchonly)
+        @test count_specialization(M.inline_nospecialize) == 1
+        M.invokef(M.inline_nospecialize, withinfernce)
+        @test count_specialization(M.inline_nospecialize) == 6
+        @test any(M.is_inline_checker, @code_typed1 M.invokef(M.inline_nospecialize, dispatchonly))
+    end
+
+    @testset "@noinfer" begin
+        @eval M begin
+            Base.@noinfer function noinfer(@nospecialize a)
+                c = isa(a, Function)
+                inline_checker(c)
+            end
+
+            # `@noinfer` should still allow inlinining
+            Base.@noinfer @inline function inline_noinfer(@nospecialize a)
+                c = isa(a, Function)
+                inline_checker(c)
+            end
+        end
+
+        # `@nospecialize` should suppress runtime dispatches of `nospecialize`
+        M.invokef(M.noinfer, dispatchonly)
+        @test count_specialization(M.noinfer) == 1
+        # `@noinfer` suppresses inference also
+        M.invokef(M.noinfer, withinfernce)
+        @test count_specialization(M.noinfer) == 1
+        @test !any(M.is_inline_checker, @code_typed1 M.invokef(M.noinfer, dispatchonly))
+
+        # `@noinfer` should still allow inlinining
+        M.invokef(M.inline_noinfer, dispatchonly)
+        @test count_specialization(M.inline_noinfer) == 1
+        M.invokef(M.inline_noinfer, withinfernce)
+        @test count_specialization(M.inline_noinfer) == 1
+        @test any(M.is_inline_checker, @code_typed1 M.invokef(M.inline_noinfer, dispatchonly))
+    end
+end
+
 @testset "fieldtype for unions" begin # e.g. issue #40177
     f40177(::Type{T}) where {T} = fieldtype(T, 1)
     for T in [
