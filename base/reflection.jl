@@ -99,8 +99,8 @@ since it is not idiomatic to explicitly export names from `Main`.
 
 See also: [`@locals`](@ref Base.@locals), [`@__MODULE__`](@ref).
 """
-names(m::Module; all::Bool = false, imported::Bool = false) =
-    sort!(ccall(:jl_module_names, Array{Symbol,1}, (Any, Cint, Cint), m, all, imported))
+names(m::Module; all::Bool = false, imported::Bool = false, usings::Bool = false) =
+    sort!(ccall(:jl_module_names, Array{Symbol,1}, (Any, Cint, Cint, Cint), m, all, imported, usings))
 
 isexported(m::Module, s::Symbol) = ccall(:jl_module_exports_p, Cint, (Any, Any), m, s) != 0
 isdeprecated(m::Module, s::Symbol) = ccall(:jl_is_binding_deprecated, Cint, (Any, Any), m, s) != 0
