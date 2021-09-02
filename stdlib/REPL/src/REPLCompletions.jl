@@ -168,7 +168,7 @@ function complete_symbol(sym::String, ffunc, context_module::Module=Main)
             # Also look in modules we got through `using`
             mods = ccall(:jl_module_usings, Any, (Any,), context_module)::Vector
             for m in mods
-                append!(suggestions, filtered_mod_names(p, m::Module, name, false, true, true))
+                append!(suggestions, filtered_mod_names(p, m::Module, name)
             end
             append!(suggestions, filtered_mod_names(p, mod, name, true, true, true))
         else
