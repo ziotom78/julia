@@ -810,14 +810,10 @@ JL_DLLEXPORT jl_value_t *jl_module_usings(jl_module_t *m)
     return (jl_value_t*)a;
 }
 
-JL_DLLEXPORT jl_value_t *jl_module_names(jl_module_t *m, int all, int imported, int usings)
+void _jl_module_names_into_array(jl_array_t* a, jl_module_t *m, int all, int imported, int usings)
 {
-    jl_array_t *a = jl_alloc_array_1d(jl_array_symbol_type, 0);
-    JL_GC_PUSH1(&a);
-    size_t i;
-    JL_LOCK(&m->lock);
     void **table = m->bindings.table;
-    for (i = 1; i < m->bindings.size; i+=2) {
+    for (size_t i = 1; i < m->bindings.size; i+=2) {
         if (table[i] != HT_NOTFOUND) {
             jl_binding_t *b = (jl_binding_t*)table[i];
             int hidden = jl_symbol_name(b->name)[0]=='#';
@@ -832,12 +828,21 @@ JL_DLLEXPORT jl_value_t *jl_module_names(jl_module_t *m, int all, int imported, 
             }
         }
     }
+}
+
+JL_DLLEXPORT jl_value_t *jl_module_names(jl_module_t *m, int all, int imported, int usings)
+{
+    jl_array_t *a = jl_alloc_array_1d(jl_array_symbol_type, 0);
+    JL_GC_PUSH1(&a);
+    JL_LOCK(&m->lock);
+    _jl_module_names_into_array(a, m, all, imported, usings);
     if (usings) {
         for(int i=(int)m->usings.len-1; i >= 0; --i) {
             jl_module_t *imp = module_usings_getidx(m, i);
-            jl_array_grow_end(a, 1);
-            //XXX: change to jl_arrayset if array storage allocation for Array{Symbols,1} changes:
-            jl_array_ptr_set(a, jl_array_dim0(a)-1, (jl_value_t*)imp->name);
+            if (imp != jl_base_module && imp != jl_core_module) {
+                // Add all the _exported_ names from imp (including imp itself) into a.
+                _jl_module_names_into_array(a, imp, 0, 0, 0);
+            }
         }
     }
     JL_UNLOCK(&m->lock);
