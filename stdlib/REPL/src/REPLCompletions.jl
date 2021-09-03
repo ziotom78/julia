@@ -113,8 +113,8 @@ function appendmacro!(syms, macros, needle, endchar)
     end
 end
 
-function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, all::Bool = false, imported::Bool = false, usings::Bool = false)
-    ssyms = names(mod, all = all, imported = imported, usings = usings)
+function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString; kwargs...)
+    ssyms = names(mod; kwargs...)
     filter!(ffunc, ssyms)
     syms = String[string(s) for s in ssyms]
     macros =  filter(x -> startswith(x, "@" * name), syms)
@@ -165,14 +165,14 @@ function complete_symbol(sym::String, ffunc, context_module::Module=Main)
         end
         # Looking for a binding in a module
         if mod == context_module
-            # Also look in modules we got through `using`
-            mods = ccall(:jl_module_usings, Any, (Any,), context_module)::Vector
-            for m in mods
-                append!(suggestions, filtered_mod_names(p, m::Module, name)
-            end
-            append!(suggestions, filtered_mod_names(p, mod, name, true, true, true))
-        else
-            append!(suggestions, filtered_mod_names(p, mod, name, true, false, true))
+            # special case `Core` and `Base` bindings
+            # - `Core` bindings should be added to every modules
+            # - `Base` bindings should be added to non-bare modules
+            append!(suggestions, filtered_mod_names(p, Core, name))
+            isdefined(mod, :Base) && append!(suggestions, filtered_mod_names(p, Base, name))
+            append!(suggestions, filtered_mod_names(p, mod, name; all=true, imported=true, usings=true))
+        else # dot-accessed module context
+            append!(suggestions, filtered_mod_names(p, mod, name; all=true, imported=false, usings=true))
         end
     elseif val !== nothing # looking for a property of an instance
         for property in propertynames(val, false)
