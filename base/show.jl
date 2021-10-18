@@ -1315,7 +1315,8 @@ is_id_char(c::AbstractChar) = ccall(:jl_id_char, Cint, (UInt32,), c) != 0
      isidentifier(s) -> Bool
 
 Return whether the symbol or string `s` contains characters that are parsed as
-a valid identifier in Julia code.
+a valid ordinary identifier (not a binary/unary operator) in Julia code;
+see also [`Base.isoperator`](@ref).
 
 Internally Julia allows any sequence of characters in a `Symbol` (except `\\0`s),
 and macros automatically use variable names containing `#` in order to avoid
@@ -1832,7 +1833,7 @@ function show_unquoted(io::IO, ex::Expr, indent::Int, prec::Int, quote_level::In
         elseif head === :hcat || head === :row
             sep = " "
         elseif head === :ncat || head === :nrow
-            sep = ";"^args[1] * " "
+            sep = ";"^args[1]::Int * " "
             args = args[2:end]
             nargs = nargs - 1
         else
@@ -2378,7 +2379,9 @@ end
 function print_type_stacktrace(io, type; color=:normal)
     str = sprint(show, type, context=io)
     i = findfirst('{', str)
-    if i === nothing || !get(io, :backtrace, false)::Bool
+    if !get(io, :backtrace, false)::Bool
+        print(io, str)
+    elseif i === nothing
         printstyled(io, str; color=color)
     else
         printstyled(io, str[1:prevind(str,i)]; color=color)
