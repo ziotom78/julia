@@ -239,6 +239,14 @@ end
     end
 end
 
+@testset "infodump" begin
+    # check that infodump(io) doesn't error, produces some output
+    buf = PipeBuffer()
+    InteractiveUtils.infodump(buf)
+    output = read(buf, String)
+    @test startswith(output, "Julia Version $VERSION")
+end
+
 const curmod = @__MODULE__
 const curmod_name = fullname(curmod)
 const curmod_str = curmod === Main ? "Main" : join(curmod_name, ".")

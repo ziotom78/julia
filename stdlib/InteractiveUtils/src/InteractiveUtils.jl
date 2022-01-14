@@ -158,6 +158,94 @@ function versioninfo(io::IO=stdout; verbose::Bool=false)
     end
 end
 
+# copied from JuliaLang/julia#43807
+# TODO: delete this function once JuliaLang/julia#43807 is merged
+function _global_julia_startup_file()
+    # If the user built us with a specific Base.SYSCONFDIR, check that location first for a startup.jl file
+    # If it is not found, then continue on to the relative path based on Sys.BINDIR
+    BINDIR = Sys.BINDIR::String
+    SYSCONFDIR = Base.SYSCONFDIR::String
+    if !isempty(SYSCONFDIR)
+        p1 = abspath(BINDIR, SYSCONFDIR, "julia", "startup.jl")
+        isfile(p1) && return p1
+    end
+    p2 = abspath(BINDIR, "..", "etc", "julia", "startup.jl")
+    isfile(p2) && return p2
+    return nothing
+end
+
+# copied from JuliaLang/julia#43807
+# TODO: delete this function once JuliaLang/julia#43807 is merged
+function _local_julia_startup_file()
+    if !isempty(DEPOT_PATH)
+        path = abspath(DEPOT_PATH[1], "config", "startup.jl")
+        isfile(path) && return path
+    end
+    return nothing
+end
+
+"""
+    debuginfodump(io::IO=stdout)
+
+Print a variety of useful debugging info.
+
+See also: [`versioninfo`](@ref).
+"""
+function debuginfodump(io::IO=stdout)
+    # 1. InteractiveUtils.versioninfo(; verbose = true)
+    # 2. Threads.nthreads()
+    # 3. Information about the global startup file
+    # 4. Information about the local startup file
+    # 5. Base.julia_cmd()
+    # 6. LinearAlgebra.versioninfo()
+    # 7. Registry status
+    # 8. Project status
+    # 9. Manifest status
+    # 10. List of outdated packages in the project
+    # 11. List of outdated packages in the manifest
+
+    # So that we don't have to add LinearAlgebra as a dependency of InteractiveUtils
+    linearalgebra_uuid = Base.UUID("37e2e46d-f89d-539d-b4ee-838fcccc9c8e")
+    linearalgebra_id = Base.PkgId(linearalgebra_uuid, "LinearAlgebra")
+    linearalgebra_module = Base.require(linearalgebra_id)
+
+    # So that we don't have to add Pkg as a dependency of InteractiveUtils
+    pkg_uuid = Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
+    pkg_id = Base.PkgId(pkg_uuid, "Pkg")
+    pkg_module = Base.require(pkg_id)
+
+    versioninfo(io; verbose=true) # InteractiveUtils.versioninfo
+    println(io, "Miscellaneous Info:")
+    println(io, "  Threads.nthreads(): ", Base.Threads.nthreads())
+    for pair in [
+            ("Global" => _global_julia_startup_file()),
+            ("Local" => _local_julia_startup_file()),
+        ]
+        filename = pair[2]
+        if filename === nothing
+            description = "does not exist"
+        else
+            str = strip(read(filename, String))
+            expr = Base.Meta.parse(str; raise=false)
+            if expr === nothing
+                description = "does not contain any code"
+            else
+                description = "exists and contains code ($(filename))"
+            end
+        end
+        println(io, "  $(pair[1]) startup file: ", description)
+    end
+    println(io, "  Base.julia_cmd(): ", Base.julia_cmd())
+    linearalgebra_module.versioninfo(io)
+    pkg_module.Registry.status(io)
+    pkg_module.status(; io, mode=pkg_module.PKGMODE_PROJECT)
+    pkg_module.status(; io, mode=pkg_module.PKGMODE_MANIFEST)
+    println(io, "Outdated Packages:")
+    pkg_module.status(; io, outdated=true, mode=pkg_module.PKGMODE_PROJECT)
+    pkg_module.status(; io, outdated=true, mode=pkg_module.PKGMODE_MANIFEST)
+
+    return nothing
+end
 
 function type_close_enough(@nospecialize(x), @nospecialize(t))
     x == t && return true
