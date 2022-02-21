@@ -120,6 +120,7 @@ end
 # entries starting with `@` are named environments:
 #  - the first three `#`s in a named environment are replaced with version numbers
 #  - `@stdlib` is a special name for the standard library and expands to its path
+#  - `@vendored` is a special name for user-provided vendored packages
 
 # if you want a current env setup, use direnv and
 # have your .envrc do something like this:
@@ -129,7 +130,7 @@ end
 # this will inherit an existing JULIA_LOAD_PATH value or if there is none, leave
 # a trailing empty entry in JULIA_LOAD_PATH which will be replaced with defaults.
 
-const DEFAULT_LOAD_PATH = ["@", "@v#.#", "@stdlib"]
+const DEFAULT_LOAD_PATH = ["@", "@v#.#", "@stdlib", "@vendored"]
 
 """
     LOAD_PATH
@@ -137,7 +138,7 @@ const DEFAULT_LOAD_PATH = ["@", "@v#.#", "@stdlib"]
 An array of paths for `using` and `import` statements to consider as project
 environments or package directories when loading code. It is populated based on
 the [`JULIA_LOAD_PATH`](@ref JULIA_LOAD_PATH) environment variable if set;
-otherwise it defaults to `["@", "@v#.#", "@stdlib"]`. Entries starting with `@`
+otherwise it defaults to `["@", "@v#.#", "@stdlib", "@vendored"]`. Entries starting with `@`
 have special meanings:
 
 - `@` refers to the "current active environment", the initial value of which is
@@ -146,6 +147,8 @@ have special meanings:
 
 - `@stdlib` expands to the absolute path of the current Julia installation's
   standard library directory.
+
+- `@vendored` expands to an absolute path where users can store vendored packages
 
 - `@name` refers to a named environment, which are stored in depots (see
   [`JULIA_DEPOT_PATH`](@ref JULIA_DEPOT_PATH)) under the `environments`
@@ -252,6 +255,7 @@ function load_path_expand(env::AbstractString)::Union{String, Nothing}
         env == "@" && return active_project(false)
         env == "@." && return current_project()
         env == "@stdlib" && return Sys.STDLIB
+        env == "@vendored" && return Sys.VENDORED
         env = replace(env, '#' => VERSION.major, count=1)
         env = replace(env, '#' => VERSION.minor, count=1)
         env = replace(env, '#' => VERSION.patch, count=1)

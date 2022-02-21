@@ -94,7 +94,7 @@ The `JULIA_LOAD_PATH` environment variable is used to populate the global Julia
 `import` and `using` (see [Code Loading](@ref code-loading)).
 
 Unlike the shell `PATH` variable, empty entries in `JULIA_LOAD_PATH` are expanded to
-the default value of `LOAD_PATH`, `["@", "@v#.#", "@stdlib"]` when populating
+the default value of `LOAD_PATH`, `["@", "@v#.#", "@stdlib", "@vendored"]` when populating
 `LOAD_PATH`. This allows easy appending, prepending, etc. of the load path value in
 shell scripts regardless of whether `JULIA_LOAD_PATH` is already set or not. For
 example, to prepend the directory `/foo/bar` to `LOAD_PATH` just do
@@ -104,7 +104,7 @@ export JULIA_LOAD_PATH="/foo/bar:$JULIA_LOAD_PATH"
 If the `JULIA_LOAD_PATH` environment variable is already set, its old value will be
 prepended with `/foo/bar`. On the other hand, if `JULIA_LOAD_PATH` is not set, then
 it will be set to `/foo/bar:` which will expand to a `LOAD_PATH` value of
-`["/foo/bar", "@", "@v#.#", "@stdlib"]`. If `JULIA_LOAD_PATH` is set to the empty
+`["/foo/bar", "@", "@v#.#", "@stdlib", "@vendored"]`. If `JULIA_LOAD_PATH` is set to the empty
 string, it expands to an empty `LOAD_PATH` array. In other words, the empty string
 is interpreted as a zero-element array, not a one-element array of the empty string.
 This behavior was chosen so that it would be possible to set an empty load path via
@@ -424,4 +424,3 @@ On debug builds of Julia this is always enabled. Recommended to use with `-g 2`.
 ### `JULIA_LLVM_ARGS`
 
 Arguments to be passed to the LLVM backend.
-

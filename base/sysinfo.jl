@@ -52,6 +52,16 @@ global STDLIB::String = "$BINDIR/../share/julia/stdlib/v$(VERSION.major).$(VERSI
 # to update cached method locations to updated ones.
 const BUILD_STDLIB_PATH = STDLIB
 
+"""
+    Sys.VENDORED::String
+
+A string containing the full path to the directory containing the `vendored` packages.
+"""
+global VENDORED::String = "$BINDIR/../share/julia/vendored/v$(VERSION.major).$(VERSION.minor)" # for bootstrap
+# In case VENDORED change after julia is built, the variable below can be used
+# to update cached method locations to updated ones.
+const BUILD_VENDORED_PATH = VENDORED
+
 # helper to avoid triggering precompile warnings
 
 """
