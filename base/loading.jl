@@ -1078,6 +1078,7 @@ const pkgorigins = Dict{PkgId,PkgOrigin}()
 
 require(uuidkey::PkgId) = @lock require_lock _require_prelocked(uuidkey)
 
+const already_warned_path_change_pkgs = Set{UUID}()
 function _require_prelocked(uuidkey::PkgId)
     just_loaded_pkg = false
     if !root_module_exists(uuidkey)
@@ -1092,6 +1093,16 @@ function _require_prelocked(uuidkey::PkgId)
     if just_loaded_pkg && !root_module_exists(uuidkey)
         error("package `$(uuidkey.name)` did not define the expected \
               module `$(uuidkey.name)`, check for typos in package module name")
+    end
+    pkgorig = get(pkgorigins, uuidkey, nothing)
+    new_path = locate_package(uuidkey)
+    if pkgorig !== nothing && pkgorig.path !== nothing &&
+            !samefile(fixup_stdlib_path(pkgorig.path), new_path) && uuidkey.uuid ∉ already_warned_path_change_pkgs
+        @warn "Package $(uuidkey.name) already loaded from path $(repr(pkgorig.path)), \
+               now attempted to be loaded from $(repr(new_path)). This might indicate a \
+               change of environment between package loads and can mean that incompatible \
+               packages have been loaded."
+        push!(already_warned_path_change_pkgs, uuidkey.uuid)
     end
     return root_module(uuidkey)
 end
