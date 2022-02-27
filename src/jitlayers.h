@@ -9,6 +9,8 @@
 
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
+#include <llvm/ExecutionEngine/Orc/CompileOnDemandLayer.h>
+#include <llvm/ExecutionEngine/Orc/EPCIndirectionUtils.h>
 #include <llvm/ExecutionEngine/JITEventListener.h>
 
 #include <llvm/Target/TargetMachine.h>
@@ -190,6 +192,7 @@ public:
 #endif
     typedef orc::IRCompileLayer CompileLayerT;
     typedef orc::IRTransformLayer OptimizeLayerT;
+    typedef orc::CompileOnDemandLayer JITLayerT;
     typedef object::OwningBinary<object::ObjectFile> OwningObj;
 private:
     struct OptimizerT {
@@ -256,6 +259,7 @@ private:
 
     orc::ThreadSafeContext TSCtx;
     orc::ExecutionSession ES;
+    std::unique_ptr<orc::EPCIndirectionUtils> EPCIU;
     orc::JITDylib &GlobalJD;
     orc::JITDylib &JD;
 
@@ -269,6 +273,7 @@ private:
     CompileLayerT CompileLayer3;
     OptimizeLayerT OptimizeLayers[4];
     OptSelLayerT OptSelLayer;
+    JITLayerT JITLayer;
 
     DenseMap<void*, std::string> ReverseLocalSymbolTable;
 };

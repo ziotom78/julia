@@ -798,6 +798,13 @@ namespace {
         .setCodeModel(TM.getCodeModel())
         .setCodeGenOptLevel(CodeGenOptLevelFor(optlevel));
     }
+
+    std::unique_ptr<orc::EPCIndirectionUtils> setupEPCIU(orc::ExecutionSession &ES) {
+        auto EPCIU = cantFail(orc::EPCIndirectionUtils::Create(ES.getExecutorProcessControl()));
+        EPCIU->createLazyCallThroughManager(ES, 0);
+        cantFail(orc::setUpInProcessLCTMReentryViaEPCIU(*EPCIU));
+        return EPCIU;
+    }
 }
 
 JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
@@ -815,6 +822,7 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
 #else
     ES(),
 #endif
+    EPCIU(setupEPCIU(ES)),
     GlobalJD(ES.createBareJITDylib("JuliaGlobals")),
     JD(ES.createBareJITDylib("JuliaOJIT")),
 #ifdef JL_USE_JITLINK
@@ -845,7 +853,8 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
         {ES, CompileLayer2, OptimizerT(PM2, 2)},
         {ES, CompileLayer3, OptimizerT(PM3, 3)},
     },
-    OptSelLayer(OptimizeLayers)
+    OptSelLayer(OptimizeLayers),
+    JITLayer(ES, OptSelLayer, EPCIU->getLazyCallThroughManager(), [&](){ return EPCIU->createIndirectStubsManager(); })
 {
 #ifdef JL_USE_JITLINK
 # if defined(_OS_DARWIN_) && defined(LLVM_SHLIB)
