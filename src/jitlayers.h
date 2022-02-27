@@ -200,9 +200,9 @@ private:
 
         OptimizerResultT operator()(orc::ThreadSafeModule M, orc::MaterializationResponsibility &R);
     private:
-        int optlevel;
         legacy::PassManager &PM;
         std::mutex &optmutex;
+        int optlevel;
     };
     // Custom object emission notification handler for the JuliaOJIT
     template <typename ObjT, typename LoadResult>
@@ -225,6 +225,10 @@ private:
 public:
 
     JuliaOJIT(TargetMachine &TM, LLVMContext *Ctx);
+    ~JuliaOJIT() {
+        cantFail(ES.endSession());
+        cantFail(EPCIU->cleanup());
+    }
 
     void enableJITDebuggingSupport();
 #ifndef JL_USE_JITLINK
