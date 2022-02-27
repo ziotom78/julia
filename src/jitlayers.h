@@ -196,12 +196,13 @@ public:
     typedef object::OwningBinary<object::ObjectFile> OwningObj;
 private:
     struct OptimizerT {
-        OptimizerT(legacy::PassManager &PM, int optlevel) : optlevel(optlevel), PM(PM) {}
+        OptimizerT(legacy::PassManager &PM, std::mutex &optmutex, TargetMachine &TM, int optlevel);
 
         OptimizerResultT operator()(orc::ThreadSafeModule M, orc::MaterializationResponsibility &R);
     private:
         int optlevel;
         legacy::PassManager &PM;
+        std::mutex &optmutex;
     };
     // Custom object emission notification handler for the JuliaOJIT
     template <typename ObjT, typename LoadResult>
@@ -255,6 +256,7 @@ private:
     legacy::PassManager PM1;
     legacy::PassManager PM2;
     legacy::PassManager PM3;
+    std::mutex optmutexes[4]; // per-optlevel mutex
     std::unique_ptr<TargetMachine> TMs[4];
 
     orc::ThreadSafeContext TSCtx;

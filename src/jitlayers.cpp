@@ -468,6 +468,11 @@ static auto countBasicBlocks(const Function &F)
     return std::distance(F.begin(), F.end());
 }
 
+JuliaOJIT::OptimizerT::OptimizerT(legacy::PassManager &PM, std::mutex &optmutex, TargetMachine &TM, int optlevel)
+    : PM(PM), optmutex(optmutex), optlevel(optlevel) {
+    addPassesForOptLevel(PM, TM, optlevel);
+}
+
 OptimizerResultT JuliaOJIT::OptimizerT::operator()(orc::ThreadSafeModule TSM, orc::MaterializationResponsibility &R) {
     TSM.withModuleDo([&](Module &M){
         uint64_t start_time = 0;
@@ -492,8 +497,12 @@ OptimizerResultT JuliaOJIT::OptimizerT::operator()(orc::ThreadSafeModule TSM, or
         }
 
         JL_TIMING(LLVM_OPT);
-        
-        PM.run(M);
+        {
+            //Protect our PM from concurrent accesses
+            std::lock_guard<std::mutex> guard(optmutex);
+            PM.run(M);
+            //But don't hold the lock during timing code
+        }
 
         uint64_t end_time = 0;
         if (dump_llvm_opt_stream != NULL) {
@@ -848,10 +857,10 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
     CompileLayer2(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(TM, 2))),
     CompileLayer3(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(TM, 3))),
     OptimizeLayers{
-        {ES, CompileLayer0, OptimizerT(PM0, 0)},
-        {ES, CompileLayer1, OptimizerT(PM1, 1)},
-        {ES, CompileLayer2, OptimizerT(PM2, 2)},
-        {ES, CompileLayer3, OptimizerT(PM3, 3)},
+        {ES, CompileLayer0, OptimizerT(PM0, optmutexes[0], *TMs[0], 0)},
+        {ES, CompileLayer1, OptimizerT(PM1, optmutexes[1], *TMs[1], 1)},
+        {ES, CompileLayer2, OptimizerT(PM2, optmutexes[2], *TMs[2], 2)},
+        {ES, CompileLayer3, OptimizerT(PM3, optmutexes[3], *TMs[3], 3)},
     },
     OptSelLayer(OptimizeLayers),
     JITLayer(ES, OptSelLayer, EPCIU->getLazyCallThroughManager(), [&](){ return EPCIU->createIndirectStubsManager(); })
@@ -876,10 +885,6 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
             registerRTDyldJITObject(Object, LO, MemMgr);
         });
 #endif
-    addPassesForOptLevel(PM0, *TMs[0], 0);
-    addPassesForOptLevel(PM1, *TMs[1], 1);
-    addPassesForOptLevel(PM2, *TMs[2], 2);
-    addPassesForOptLevel(PM3, *TMs[3], 3);
 
     // Make sure SectionMemoryManager::getSymbolAddressInProcess can resolve
     // symbols in the program as well. The nullptr argument to the function
