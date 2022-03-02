@@ -227,7 +227,7 @@ public:
     JuliaOJIT(TargetMachine &TM, LLVMContext *Ctx);
     ~JuliaOJIT() {
         cantFail(ES.endSession());
-        cantFail(EPCIU->cleanup());
+        // cantFail(EPCIU->cleanup());
     }
 
     void enableJITDebuggingSupport();
@@ -265,7 +265,8 @@ private:
 
     orc::ThreadSafeContext TSCtx;
     orc::ExecutionSession ES;
-    std::unique_ptr<orc::EPCIndirectionUtils> EPCIU;
+    // std::unique_ptr<orc::EPCIndirectionUtils> EPCIU;
+    std::unique_ptr<orc::LazyCallThroughManager> LCTM;
     orc::JITDylib &GlobalJD;
     orc::JITDylib &JD;
 
