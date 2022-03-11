@@ -796,7 +796,7 @@ void registerRTDyldJITObject(const object::ObjectFile &Object,
     );
 }
 #endif
-
+Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>> CreateJuliaJITLinkMemMgr();
 namespace {
     orc::JITTargetMachineBuilder createJTMBFromTM(TargetMachine &TM, int optlevel) {
         return orc::JITTargetMachineBuilder(TM.getTargetTriple())
@@ -844,7 +844,8 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
 # if JL_LLVM_VERSION < 140000
     ObjectLayer(ES, std::make_unique<jitlink::InProcessMemoryManager>()),
 # else
-    ObjectLayer(ES, cantFail(jitlink::InProcessMemoryManager::Create())),
+    MemMgr(cantFail(CreateJuliaJITLinkMemMgr())),
+    ObjectLayer(ES, *MemMgr),
 # endif
 #else
     MemMgr(createRTDyldMemoryManager()),

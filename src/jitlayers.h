@@ -272,6 +272,8 @@ private:
 
 #ifndef JL_USE_JITLINK
     std::shared_ptr<RTDyldMemoryManager> MemMgr;
+#else
+    std::unique_ptr<jitlink::JITLinkMemoryManager> MemMgr;
 #endif
     ObjLayerT ObjectLayer;
     CompileLayerT CompileLayer0;
