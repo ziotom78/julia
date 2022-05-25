@@ -17,6 +17,7 @@ Base.Experimental.@optlevel 1
 
 using Base.Meta, Sockets
 import InteractiveUtils
+import FileWatching
 
 export
     AbstractREPL,
@@ -642,7 +643,6 @@ function add_history(hist::REPLHistoryProvider, s::PromptState)
     # mode: $mode
     $(replace(str, r"^"ms => "\t"))
     """
-    # TODO: write-lock history file
     try
         seekend(hist.history_file)
     catch err
@@ -651,8 +651,10 @@ function add_history(hist::REPLHistoryProvider, s::PromptState)
         # If this doesn't fix it (e.g. when file is deleted), we'll end up rethrowing anyway
         hist_open_file(hist)
     end
-    print(hist.history_file, entry)
-    flush(hist.history_file)
+    FileWatching.mkpidlock(hist.file_path  * ".pid", stale_age=3) do
+        print(hist.history_file, entry)
+        flush(hist.history_file)
+    end
     nothing
 end
 
