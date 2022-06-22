@@ -276,9 +276,7 @@ JL_DLLEXPORT void jl_eh_restore_state(jl_handler_t *eh)
     ct->ptls->defer_signal = eh->defer_signal;
     if (old_gc_state != eh->gc_state) {
         jl_atomic_store_release(&ct->ptls->gc_state, eh->gc_state);
-        if (old_gc_state) {
-            jl_gc_safepoint_(ct->ptls);
-        }
+        jl_gc_safepoint_(ct->ptls);
     }
     if (old_defer_signal && !eh->defer_signal) {
         jl_sigint_safepoint(ct->ptls);
