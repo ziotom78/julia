@@ -874,7 +874,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                 # the second subtyping conditions are necessary to distinguish usual cases
                 # from rare cases when `Const` wrapped those extended lattice type objects
                 if isa(rettype_const, Vector{Any}) && !(Vector{Any} <: rettype)
-                    rettype = PartialStruct(rettype, rettype_const)
+                    rettype = PartialStruct(rettype::DataType, rettype_const)
                 elseif isa(rettype_const, PartialOpaque) && rettype <: Core.OpaqueClosure
                     rettype = rettype_const
                 elseif isa(rettype_const, InterConditional) && !(InterConditional <: rettype)

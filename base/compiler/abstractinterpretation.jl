@@ -449,7 +449,7 @@ function conditional_argtype(@nospecialize(rt), @nospecialize(sig), argtypes::Ve
     if isa(rt, InterConditional) && rt.slot == i
         return rt
     else
-        thentype = elsetype = tmeet(widenconditional(argtypes[i]), fieldtype(sig, i))
+        thentype = elsetype = tmeet(widenconditional(argtypes[i]), fieldtype(sig, i)::Type)
         condval = maybe_extract_const_bool(rt)
         condval === true && (elsetype = Bottom)
         condval === false && (thentype = Bottom)

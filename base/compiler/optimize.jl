@@ -258,8 +258,8 @@ function stmt_effect_flags(@nospecialize(stmt), @nospecialize(rt), src::Union{IR
             typ ⊑ Tuple || return (false, false)
             rt_lb = argextype(args[2], src)
             rt_ub = argextype(args[3], src)
-            src = argextype(args[4], src)
-            if !(rt_lb ⊑ Type && rt_ub ⊑ Type && src ⊑ Method)
+            source = argextype(args[4], src)
+            if !(rt_lb ⊑ Type && rt_ub ⊑ Type && source ⊑ Method)
                 return (false, false)
             end
             return (true, true)

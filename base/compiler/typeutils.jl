@@ -86,7 +86,7 @@ has_concrete_subtype(d::DataType) = d.flags & 0x20 == 0x20 # n.b. often computed
 # For example, Type{v} is not valid if v is a value
 # Accepts TypeVars also, since it assumes the user will rewrap it correctly
 function valid_as_lattice(@nospecialize(x))
-    x === Bottom && false
+    x === Bottom && return false
     x isa TypeVar && return valid_as_lattice(x.ub)
     x isa UnionAll && (x = unwrap_unionall(x))
     if x isa Union

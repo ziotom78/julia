@@ -477,7 +477,7 @@ function domsort_ssa!(ir::IRCode, domtree::DomTree)
         elseif !isa(terminator, ReturnNode)
             if isa(terminator, Expr)
                 if terminator.head === :enter
-                    terminator.args[1] = bb_rename[terminator.args[1]]
+                    terminator.args[1] = bb_rename[terminator.args[1]::Int]
                 end
             end
             if bb_rename[bb + 1] != new_bb + 1

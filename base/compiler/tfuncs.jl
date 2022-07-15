@@ -1574,7 +1574,7 @@ function tuple_tfunc(argtypes::Vector{Any})
     typ = Tuple{params...}
     # replace a singleton type with its equivalent Const object
     isdefined(typ, :instance) && return Const(typ.instance)
-    return anyinfo ? PartialStruct(typ, argtypes) : typ
+    return anyinfo ? PartialStruct(typ::DataType, argtypes) : typ
 end
 
 arrayref_tfunc(@nospecialize(boundscheck), @nospecialize(ary), @nospecialize idxs...) =
@@ -1637,9 +1637,11 @@ function _opaque_closure_tfunc(@nospecialize(arg), @nospecialize(lb), @nospecial
     t = (argt_exact ? Core.OpaqueClosure{argt, T} : Core.OpaqueClosure{<:argt, T}) where T
     t = lbt == ubt ? t{ubt} : (t{T} where lbt <: T <: ubt)
 
-    (isa(source, Const) && isa(source.val, Method)) || return t
+    isa(source, Const) || return t
+    source = source.val
+    isa(source, Method) || return t
 
-    return PartialOpaque(t, tuple_tfunc(env), linfo, source.val)
+    return PartialOpaque(t, tuple_tfunc(env), linfo, source)
 end
 
 # whether getindex for the elements can potentially throw UndefRef
@@ -2145,7 +2147,9 @@ function setglobal!_nothrow(argtypes::Vector{Any})
     M, s, newty = argtypes
     if M isa Const && s isa Const
         M, s = M.val, s.val
-        return global_assignment_nothrow(M, s, newty)
+        if M isa Module && s isa Symbol
+            return global_assignment_nothrow(M, s, newty)
+        end
     end
     return false
 end
