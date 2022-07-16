@@ -48,27 +48,44 @@ end
 
 add_tfunc(throw, 1, 1, (@nospecialize(x)) -> Bottom, 0)
 
-# the inverse of typeof_tfunc
-# returns (type, isexact, isconcrete, istype)
-# if isexact is false, the actual runtime type may (will) be a subtype of t
-# if isconcrete is true, the actual runtime type is definitely concrete (unreachable if not valid as a typeof)
-# if istype is true, the actual runtime value will definitely be a type (e.g. this is false for Union{Type{Int}, Int})
-function instanceof_tfunc(@nospecialize(t))
+# works similarly to tuple, but with more type stability
+struct InstanceofResult
+    type::Type
+    isexact::Bool
+    isconcrete::Bool
+    istype::Bool
+    InstanceofResult(@nospecialize(type), isexact::Bool, isconcrete::Bool, istype::Bool) = new(type::Type, isexact, isconcrete, istype)
+end
+@eval iterate(res::InstanceofResult, state=1) =
+    state > $(fieldcount(InstanceofResult)) ? nothing : (getfield(res, state), state+1)
+getindex(res::InstanceofResult, idx::Int) = getfield(res, idx)
+
+"""
+    instanceof_tfunc(@nospecialize(t)) -> InstanceofResult(type::Type, isexact::Bool, isconcrete::Bool, istype::Bool)
+
+The inverse of `typeof_tfunc`.
+If `isexact` is `false`, the actual runtime type may (will) be a subtype of `t`.
+if `isconcrete` is true, the actual runtime type is definitely concrete (unreachable if not valid as a `typeof`)
+if `istype` is true, the actual runtime value will definitely be a `type` (e.g. this is `false` for `Union{Type{Int}, Int}`)
+"""
+@inline function instanceof_tfunc(@nospecialize(t))
     if isa(t, Const)
-        if isa(t.val, Type) && valid_as_lattice(t.val)
-            return t.val, true, isconcretetype(t.val), true
+        val = t.val
+        if isa(val, Type) && valid_as_lattice(val)
+            return InstanceofResult(val, true, isconcretetype(val), true)
         end
-        return Bottom, true, false, false # runtime throws on non-Type
+        return InstanceofResult(Bottom, true, false, false) # runtime throws on non-Type
     end
     t = widenconst(t)
     if t === Bottom
-        return Bottom, true, true, false # runtime unreachable
+        return InstanceofResult(Bottom, true, true, false) # runtime unreachable
     elseif t === typeof(Bottom) || !hasintersect(t, Type)
-        return Bottom, true, false, false # literal Bottom or non-Type
+        return InstanceofResult(Bottom, true, false, false) # literal Bottom or non-Type
     elseif isType(t)
         tp = t.parameters[1]
-        valid_as_lattice(tp) || return Bottom, true, false, false # runtime unreachable / throws on non-Type
-        return tp, !has_free_typevars(tp), isconcretetype(tp), true
+        valid_as_lattice(tp) || return InstanceofResult(Bottom, true, false, false) # runtime unreachable / throws on non-Type
+        tp isa TypeVar && return InstanceofResult(unwraptv(tp), !has_free_typevars(tp), isconcretetype(tp), true)
+        return InstanceofResult(tp, !has_free_typevars(tp), isconcretetype(tp), true)
     elseif isa(t, UnionAll)
         t′ = unwrap_unionall(t)
         t′′, isexact, isconcrete, istype = instanceof_tfunc(t′)
@@ -84,20 +101,20 @@ function instanceof_tfunc(@nospecialize(t))
                 isexact = true
             end
         end
-        return tr, isexact, isconcrete, istype
+        return InstanceofResult(tr, isexact, isconcrete, istype)
     elseif isa(t, Union)
         ta, isexact_a, isconcrete_a, istype_a = instanceof_tfunc(t.a)
         tb, isexact_b, isconcrete_b, istype_b = instanceof_tfunc(t.b)
-        isconcrete = isconcrete_a && isconcrete_b
-        istype = istype_a && istype_b
+        isconcrete = isconcrete_a & isconcrete_b
+        istype = istype_a & istype_b
         # most users already handle the Union case, so here we assume that
         # `isexact` only cares about the answers where there's actually a Type
         # (and assuming other cases causing runtime errors)
-        ta === Union{} && return tb, isexact_b, isconcrete, istype
-        tb === Union{} && return ta, isexact_a, isconcrete, istype
-        return Union{ta, tb}, false, isconcrete, istype # at runtime, will be exactly one of these
+        ta === Union{} && return InstanceofResult(tb, isexact_b, isconcrete, istype)
+        tb === Union{} && return InstanceofResult(ta, isexact_a, isconcrete, istype)
+        return InstanceofResult(Union{ta, tb}, false, isconcrete, istype) # at runtime, will be exactly one of these
     end
-    return Any, false, false, false
+    return InstanceofResult(Any, false, false, false)
 end
 bitcast_tfunc(@nospecialize(t), @nospecialize(x)) = instanceof_tfunc(t)[1]
 math_tfunc(@nospecialize(x)) = widenconst(x)
