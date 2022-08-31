@@ -659,7 +659,7 @@ function add_history(hist::REPLHistoryProvider, s::PromptState)
     else # handle eg devnull
         print(hist.history_file, entry)
         flush(hist.history_file)
-    end       
+    end
     nothing
 end
 
