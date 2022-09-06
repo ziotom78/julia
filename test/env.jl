@@ -1,5 +1,8 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
+# Make a copy of the original environment
+original_env = copy(ENV)
+
 using Random
 
 @test !("f=a=k=e=n=a=m=e" ∈ keys(ENV))
@@ -27,12 +30,28 @@ end
         @test isempty(ENV) || first(ENV) in c
     end
 end
+
+# issue #43486
+struct Obj43486 end
+(::Obj43486)() = ENV["KEY"] == "VALUE"
+let
+    f = Obj43486()
+    @test !(f isa Function)
+    @test withenv(f, "KEY" => "VALUE")
+end
+
 @testset "non-existent keys" begin
     key = randstring(25)
     @test !haskey(ENV,key)
     @test_throws KeyError ENV[key]
     @test get(ENV,key,"default") == "default"
     @test get(() -> "default", ENV, key) == "default"
+
+    key = randstring(25)
+    @test !haskey(ENV, key)
+    @test get!(ENV, key, "default") == "default"
+    @test haskey(ENV, key)
+    @test ENV[key] == "default"
 end
 @testset "#17956" begin
     @test length(ENV) > 1
@@ -101,4 +120,14 @@ if Sys.iswindows()
             @test !haskey(ENV, K)
         end
     end
+end
+
+# Restore the original environment
+for k in keys(ENV)
+    if !haskey(original_env, k)
+        delete!(ENV, k)
+    end
+end
+for (k, v) in pairs(original_env)
+    ENV[k] = v
 end

@@ -1,10 +1,11 @@
+# This file is a part of Julia. License is MIT: https://julialang.org/license
+
 module TestAddmul
 
 using Base: rtoldefault
 using Test
 using LinearAlgebra
 using LinearAlgebra: AbstractTriangular
-using SparseArrays
 using Random
 
 _rand(::Type{T}) where {T <: AbstractFloat} = T(randn())
