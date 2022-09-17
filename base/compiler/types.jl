@@ -303,6 +303,39 @@ to the call site signature.
 infer_compilation_signature(::AbstractInterpreter) = false
 infer_compilation_signature(::NativeInterpreter) = true
 
+function get_max_methods(interp::AbstractInterpreter, @nospecialize(f), mod::Module)
+    fmax = get_max_methods_for_func(f)
+    fmax !== nothing && return fmax
+    return get_max_methods(interp, mod)
+end
+
+function get_max_methods(interp::AbstractInterpreter, @nospecialize(f))
+    fmax = get_max_methods_for_func(f)
+    fmax !== nothing && return fmax
+    return get_max_methods(interp)
+end
+
+function get_max_methods(interp::AbstractInterpreter, mod::Module)
+    mmax = get_max_methods_for_module(mod)
+    mmax !== nothing && return mmax
+    return get_max_methods(interp)
+end
+
+get_max_methods(interp::AbstractInterpreter) = InferenceParams(interp).MAX_METHODS
+
+function get_max_methods_for_func(@nospecialize(f))
+    if f !== nothing
+        fmm = typeof(f).name.max_methods
+        fmm !== UInt8(0) && return Int(fmm)
+    end
+    return nothing
+end
+function get_max_methods_for_module(mod::Module)
+    max_methods = ccall(:jl_get_module_max_methods, Cint, (Any,), mod) % Int
+    max_methods < 0 && return nothing
+    return max_methods
+end
+
 typeinf_lattice(::AbstractInterpreter) = InferenceLattice(BaseInferenceLattice.instance)
 ipo_lattice(::AbstractInterpreter) = InferenceLattice(IPOResultLattice.instance)
 optimizer_lattice(::AbstractInterpreter) = OptimizerLattice(SimpleInferenceLattice.instance)

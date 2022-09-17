@@ -2356,12 +2356,14 @@ function return_type_tfunc(interp::AbstractInterpreter, argtypes::Vector{Any}, s
                     # sites. Otherwise, our behavior model of abstract_call
                     # below will be wrong.
                     if isa(sv, InferenceState)
+                        f = singleton_type(aft)
+                        max_methods = get_max_methods(interp, f)
                         old_restrict = sv.restrict_abstract_call_sites
                         sv.restrict_abstract_call_sites = false
-                        call = abstract_call(interp, ArgInfo(nothing, argtypes_vec), si, sv, -1)
+                        call = abstract_call(interp, ArgInfo(nothing, argtypes_vec), si, sv, max_methods)
                         sv.restrict_abstract_call_sites = old_restrict
                     else
-                        call = abstract_call(interp, ArgInfo(nothing, argtypes_vec), si, sv, -1)
+                        call = abstract_call(interp, ArgInfo(nothing, argtypes_vec), si, sv)
                     end
                     info = verbose_stmt_info(interp) ? MethodResultPure(ReturnTypeCallInfo(call.info)) : MethodResultPure()
                     rt = widenslotwrapper(call.rt)
