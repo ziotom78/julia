@@ -1177,6 +1177,10 @@ JuliaOJIT::PipelineT::PipelineT(orc::ObjectLayer &BaseLayer, TargetMachine &TM, 
     std::make_unique<CompilerT>(orc::irManglingOptionsFromTargetOptions(TM.Options), TM, optlevel)),
   OptimizeLayer(CompileLayer.getExecutionSession(), CompileLayer, OptimizerT(TM, optlevel)) {}
 
+#ifdef _COMPILER_ASAN_ENABLED_
+int64_t ___asan_globals_registered;
+#endif
+
 JuliaOJIT::JuliaOJIT()
   : TM(createTargetMachine()),
     DL(jl_create_datalayout(*TM)),
@@ -1303,6 +1307,11 @@ JuliaOJIT::JuliaOJIT()
     msan_crt[mangle("__emutls_v.__msan_origin_tls")] = JITEvaluatedSymbol::fromPointer(
         reinterpret_cast<void *>(static_cast<uintptr_t>(msan_workaround::MSanTLS::origin)), JITSymbolFlags::Exported);
     cantFail(GlobalJD.define(orc::absoluteSymbols(msan_crt)));
+#endif
+#ifdef _COMPILER_ASAN_ENABLED_
+    orc::SymbolMap asan_crt;
+    asan_crt[mangle("___asan_globals_registered")] = JITEvaluatedSymbol::fromPointer(&___asan_globals_registered, JITSymbolFlags::Exported);
+    cantFail(JD.define(orc::absoluteSymbols(asan_crt)));
 #endif
 }
 
