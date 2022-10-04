@@ -146,7 +146,7 @@ namespace {
             // Opts.Recover = CodeGenOpts.SanitizeRecover.has(Mask);
             // Opts.UseAfterScope = CodeGenOpts.SanitizeAddressUseAfterScope;
             // Opts.UseAfterReturn = CodeGenOpts.getSanitizeAddressUseAfterReturn();
-            MPM.addPass(RequireAnalysisPass<ASanGlobalsMetadataAnalysis, Module>());
+            // MPM.addPass(RequireAnalysisPass<ASanGlobalsMetadataAnalysis, Module>());
             // MPM.addPass(ModuleAddressSanitizerPass(
             //     Opts, UseGlobalGC, UseOdrIndicator, DestructorKind));
             //Let's assume the defaults are actually fine for our purposes
@@ -541,10 +541,9 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
         // Register the AA manager first so that our version is the one used.
         FAM.registerPass([&] {
             AAManager AA;
-            // TODO: Why are we only doing this for -O3?
-            if (O.getSpeedupLevel() >= 3) {
-                AA.registerFunctionAnalysis<BasicAA>();
-            }
+            //LegacyPM has been running BasicAA for us even if we didn't ask for it;
+            //there's probably various points in LLVM that assume basic aa exists
+            AA.registerFunctionAnalysis<BasicAA>();
             if (O.getSpeedupLevel() >= 2) {
                 AA.registerFunctionAnalysis<ScopedNoAliasAA>();
                 AA.registerFunctionAnalysis<TypeBasedAA>();

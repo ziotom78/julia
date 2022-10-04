@@ -25,6 +25,10 @@
 #include <stack>
 #include <queue>
 
+#if defined(JL_USE_NEW_PM) && defined(_COMPILER_ASAN_ENABLED_)
+#define JL_USE_NEW_PM_WITH_ASAN
+#endif
+
 // As of LLVM 13, there are two runtime JIT linker implementations, the older
 // RuntimeDyld (used via orc::RTDyldObjectLinkingLayer) and the newer JITLink
 // (used via orc::ObjectLinkingLayer).
@@ -43,7 +47,7 @@
 // for Mac/aarch64.
 // #define JL_FORCE_JITLINK
 
-#if defined(_OS_DARWIN_) && defined(_CPU_AARCH64_) || defined(JL_FORCE_JITLINK)
+#if defined(_OS_DARWIN_) && defined(_CPU_AARCH64_) || defined(JL_USE_NEW_PM_WITH_ASAN) || defined(JL_FORCE_JITLINK)
 # if JL_LLVM_VERSION < 130000
 #  pragma message("On aarch64-darwin, LLVM version >= 13 is required for JITLink; fallback suffers from occasional segfaults")
 # endif

@@ -71,6 +71,10 @@ STATISTIC(OptO3, "Number of modules optimized at level -O3");
 STATISTIC(ModulesMerged, "Number of modules merged");
 STATISTIC(InternedGlobals, "Number of global constants interned in the string pool");
 
+#ifdef JL_USE_NEW_PM_WITH_ASAN
+int64_t ___asan_globals_registered;
+#endif
+
 #ifdef _COMPILER_MSAN_ENABLED_
 // TODO: This should not be necessary on ELF x86_64, but LLVM's implementation
 // of the TLS relocations is currently broken, so enable this unconditionally.
@@ -1282,6 +1286,12 @@ JuliaOJIT::JuliaOJIT()
         { mangle("__truncdfhf2"),   { mangle("julia__truncdfhf2"),   JITSymbolFlags::Exported } }
     };
     cantFail(GlobalJD.define(orc::symbolAliases(jl_crt)));
+
+#ifdef JL_USE_NEW_PM_WITH_ASAN
+    orc::SymbolMap asan_crt;
+    asan_crt[mangle("___asan_globals_registered")] = JITEvaluatedSymbol::fromPointer(&___asan_globals_registered, JITSymbolFlags::Exported);
+    cantFail(JD.define(orc::absoluteSymbols(asan_crt)));
+#endif
 
 #ifdef MSAN_EMUTLS_WORKAROUND
     orc::SymbolMap msan_crt;
