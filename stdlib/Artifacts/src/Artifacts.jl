@@ -662,7 +662,7 @@ macro artifact_str(name, platform=nothing, artifacts_toml_path=nothing)
     local artifacts_toml = if artifacts_toml_path === nothing || artifacts_toml_path == :(nothing)
         find_artifacts_toml(srcfile)
     else
-        eval(artifacts_toml_path)
+        Core.eval(__module__, artifacts_toml_path)
     end
     if artifacts_toml === nothing
         error(string(
