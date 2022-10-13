@@ -1913,14 +1913,12 @@ function _builtin_nothrow(@specialize(lattice::AbstractLattice), @nospecialize(f
 end
 
 # known to be always effect-free (in particular nothrow)
-const _PURE_BUILTINS = Any[tuple, svec, ===, typeof, nfields]
-
-# known to be effect-free (but not necessarily nothrow)
-const _EFFECT_FREE_BUILTINS = [
-    fieldtype, apply_type, isa, UnionAll,
-    getfield, arrayref, const_arrayref, isdefined, Core.sizeof,
-    Core.kwfunc, Core.ifelse, Core._typevar, (<:),
-    typeassert, throw, arraysize, getglobal, compilerbarrier
+const _PURE_BUILTINS = Any[
+    tuple,
+    svec,
+    ===,
+    typeof,
+    nfields,
 ]
 
 const _CONSISTENT_BUILTINS = Any[
@@ -1939,14 +1937,47 @@ const _CONSISTENT_BUILTINS = Any[
     (<:),
     typeassert,
     throw,
-    setfield!
+    setfield!,
+]
+
+const CONSISTENT_IF_INACCESSIBLEMEMONLY_BUILTINS = Any[
+    # getfield, # this builtin is specially handled
+    arrayref,
+    arrayset,
+    arraysize,
+]
+
+# known to be effect-free (but not necessarily nothrow)
+const _EFFECT_FREE_BUILTINS = [
+    fieldtype,
+    apply_type,
+    isa,
+    UnionAll,
+    getfield,
+    arrayref,
+    arraysize,
+    const_arrayref,
+    isdefined,
+    Core.sizeof,
+    Core.kwfunc,
+    Core.ifelse,
+    Core._typevar,
+    (<:),
+    typeassert,
+    throw,
+    getglobal,
+    compilerbarrier,
+]
+
+const _EFFECT_FREE_IF_INACCESSIBLEMEMONLY_BUILTINS = Any[
+    setfield!,
+    arrayset,
 ]
 
 const _INACCESSIBLEMEM_BUILTINS = Any[
     (<:),
     (===),
     apply_type,
-    arraysize,
     Core.ifelse,
     Core.sizeof,
     svec,
@@ -1964,6 +1995,7 @@ const _INACCESSIBLEMEM_BUILTINS = Any[
 const _ARGMEM_BUILTINS = Any[
     arrayref,
     arrayset,
+    arraysize,
     modifyfield!,
     replacefield!,
     setfield!,
@@ -1972,7 +2004,6 @@ const _ARGMEM_BUILTINS = Any[
 
 const _INCONSISTENT_INTRINSICS = Any[
     Intrinsics.pointerref,      # this one is volatile
-    Intrinsics.arraylen,        # this one is volatile
     Intrinsics.sqrt_llvm_fast,  # this one may differ at runtime (by a few ulps)
     Intrinsics.have_fma,        # this one depends on the runtime environment
     Intrinsics.cglobal,         # cglobal lookup answer changes at runtime
@@ -1988,7 +2019,7 @@ const _INCONSISTENT_INTRINSICS = Any[
     Intrinsics.neg_float_fast,
     Intrinsics.rem_float_fast,
     Intrinsics.sqrt_llvm_fast,
-    Intrinsics.sub_float_fast
+    Intrinsics.sub_float_fast,
     # TODO needs to revive #31193 to mark this as inconsistent to be accurate
     # while preserving the currently optimizations for many math operations
     # Intrinsics.muladd_float,    # this is not interprocedurally consistent
@@ -2081,11 +2112,17 @@ function builtin_effects(@specialize(lattice::AbstractLattice), f::Builtin, argt
         effect_free = get_binding_type_effect_free(argtypes[1], argtypes[2]) ? ALWAYS_TRUE : ALWAYS_FALSE
         return Effects(EFFECTS_TOTAL; effect_free)
     else
-        consistent = contains_is(_CONSISTENT_BUILTINS, f) ? ALWAYS_TRUE : ALWAYS_FALSE
-        if f === setfield! || f === arrayset
-            effect_free = EFFECT_FREE_IF_INACCESSIBLEMEMONLY
-        elseif contains_is(_EFFECT_FREE_BUILTINS, f) || contains_is(_PURE_BUILTINS, f)
+        if contains_is(_CONSISTENT_BUILTINS, f)
+            consistent = ALWAYS_TRUE
+        elseif contains_is(CONSISTENT_IF_INACCESSIBLEMEMONLY_BUILTINS, f)
+            consistent = CONSISTENT_IF_INACCESSIBLEMEMONLY
+        else
+            consistent = ALWAYS_FALSE
+        end
+        if contains_is(_EFFECT_FREE_BUILTINS, f) || contains_is(_PURE_BUILTINS, f)
             effect_free = ALWAYS_TRUE
+        elseif contains_is(_EFFECT_FREE_IF_INACCESSIBLEMEMONLY_BUILTINS, f)
+            effect_free = EFFECT_FREE_IF_INACCESSIBLEMEMONLY
         else
             effect_free = ALWAYS_FALSE
         end
@@ -2267,11 +2304,22 @@ function intrinsic_effects(f::IntrinsicFunction, argtypes::Vector{Any})
         return Effects()
     end
 
-    consistent = contains_is(_INCONSISTENT_INTRINSICS, f) ? ALWAYS_FALSE : ALWAYS_TRUE
+    if contains_is(_INCONSISTENT_INTRINSICS, f)
+        consistent = ALWAYS_FALSE
+    elseif f === arraylen
+        consistent = CONSISTENT_IF_INACCESSIBLEMEMONLY
+    else
+        consistent = ALWAYS_TRUE
+    end
     effect_free = !(f === Intrinsics.pointerset) ? ALWAYS_TRUE : ALWAYS_FALSE
     nothrow = (!(!isempty(argtypes) && isvarargtype(argtypes[end])) && intrinsic_nothrow(f, argtypes))
+    if f === arraylen
+        inaccessiblememonly = INACCESSIBLEMEM_OR_ARGMEMONLY
+    else
+        inaccessiblememonly = ALWAYS_TRUE
+    end
 
-    return Effects(EFFECTS_TOTAL; consistent, effect_free, nothrow)
+    return Effects(EFFECTS_TOTAL; consistent, effect_free, nothrow, inaccessiblememonly)
 end
 
 # TODO: this function is a very buggy and poor model of the return_type function
@@ -2445,7 +2493,23 @@ function foreigncall_effects(@specialize(abstract_eval), e::Expr)
             return new_array_effects(abstract_eval, args)
         end
     end
+    if is_array_resize(name)
+        return array_resize_effects()
+    end
     return EFFECTS_UNKNOWN
+end
+
+function is_array_resize(name::Symbol)
+    return name === :jl_array_grow_beg || name === :jl_array_grow_end ||
+           name === :jl_array_del_beg || name === :jl_array_del_end ||
+           name === :jl_array_grow_at || name === :jl_array_del_at
+end
+
+function array_resize_effects()
+    return Effects(EFFECTS_TOTAL;
+        effect_free = EFFECT_FREE_IF_INACCESSIBLEMEMONLY,
+        nothrow = false,
+        inaccessiblememonly = INACCESSIBLEMEM_OR_ARGMEMONLY)
 end
 
 function alloc_array_ndims(name::Symbol)

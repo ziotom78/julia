@@ -321,7 +321,7 @@ end
 
 function _copyto_impl!(dest::Array, doffs::Integer, src::Array, soffs::Integer, n::Integer)
     n == 0 && return dest
-    n > 0 || _throw_argerror()
+    n > 0 || _throw_argerror("Number of elements to copy must be nonnegative.")
     @boundscheck checkbounds(dest, doffs:doffs+n-1)
     @boundscheck checkbounds(src, soffs:soffs+n-1)
     unsafe_copyto!(dest, doffs, src, soffs, n)
@@ -331,10 +331,7 @@ end
 # Outlining this because otherwise a catastrophic inference slowdown
 # occurs, see discussion in #27874.
 # It is also mitigated by using a constant string.
-function _throw_argerror()
-    @noinline
-    throw(ArgumentError("Number of elements to copy must be nonnegative."))
-end
+_throw_argerror(s) = (@noinline; throw(ArgumentError(s)))
 
 copyto!(dest::Array, src::Array) = copyto!(dest, 1, src, 1, length(src))
 
@@ -374,6 +371,17 @@ similar(a::Array{T}, m::Int) where {T}              = Vector{T}(undef, m)
 similar(a::Array, T::Type, dims::Dims{N}) where {N} = Array{T,N}(undef, dims)
 similar(a::Array{T}, dims::Dims{N}) where {T,N}     = Array{T,N}(undef, dims)
 
+macro _safe_getindex_meta()
+    return _is_internal(__module__) && Expr(:meta, Expr(:purity,
+        #=:consistent=#false,
+        #=:effect_free=#false,
+        #=:nothrow=#true,
+        #=:terminates_globally=#true,
+        #=:terminates_locally=#false,
+        #=:notaskstate=#false,
+        #=:inaccessiblememonly=#false))
+end
+
 # T[x...] constructs Array{T,1}
 """
     getindex(type[, elements...])
@@ -396,11 +404,17 @@ julia> getindex(Int8, 1, 2, 3)
  3
 ```
 """
-function getindex(::Type{T}, vals...) where T
+getindex(::Type{T}, vals...) where T = _getindex_impl(T, vals)
+
+# safe version
+getindex(::Type{T}, vals::T...) where T = (@_safe_getindex_meta; _getindex_impl(T, vals))
+
+function _getindex_impl(::Type{T}, vals) where T
+    @inline
     a = Vector{T}(undef, length(vals))
     if vals isa NTuple
         @inbounds for i in 1:length(vals)
-            a[i] = vals[i]
+            a[i] = getfield(vals, i)
         end
     else
         # use afoldl to avoid type instability inside loop
@@ -413,9 +427,10 @@ function getindex(::Type{T}, vals...) where T
 end
 
 function getindex(::Type{Any}, @nospecialize vals...)
+    @_safe_getindex_meta
     a = Vector{Any}(undef, length(vals))
     @inbounds for i = 1:length(vals)
-        a[i] = vals[i]
+        a[i] = getfield(vals, i)
     end
     return a
 end
@@ -1027,6 +1042,17 @@ _deleteat!(a::Vector, i::Integer, delta::Integer) =
 
 ## Dequeue functionality ##
 
+macro _terminates_locally_meta()
+    return _is_internal(__module__) && Expr(:meta, Expr(:purity,
+        #=:consistent=#false,
+        #=:effect_free=#false,
+        #=:nothrow=#false,
+        #=:terminates_globally=#false,
+        #=:terminates_locally=#true,
+        #=:notaskstate=#false,
+        #=:inaccessiblememonly=#false))
+end
+
 """
     push!(collection, items...) -> collection
 
@@ -1055,7 +1081,7 @@ See also [`pushfirst!`](@ref).
 """
 function push! end
 
-function push!(a::Array{T,1}, item) where T
+function push!(a::Vector{T}, item) where T
     # convert first so we don't grow the array if the assignment won't work
     itemT = convert(T, item)
     _growend!(a, 1)
@@ -1070,11 +1096,12 @@ function push!(a::Vector{Any}, @nospecialize x)
     return a
 end
 function push!(a::Vector{Any}, @nospecialize x...)
+    @_terminates_locally_meta
     na = length(a)
     nx = length(x)
     _growend!(a, nx)
-    for i = 1:nx
-        arrayset(true, a, x[i], na+i)
+    @inbounds for i = 1:nx
+        arrayset(true, a, getfield(x,i), na+i)
     end
     return a
 end
@@ -1129,6 +1156,7 @@ push!(a::AbstractVector, iter...) = append!(a, iter)
 append!(a::AbstractVector, iter...) = foldl(append!, iter, init=a)
 
 function _append!(a, ::Union{HasLength,HasShape}, iter)
+    @_terminates_locally_meta
     n = length(a)
     i = lastindex(a)
     resize!(a, n+Int(length(iter))::Int)
@@ -1194,6 +1222,7 @@ pushfirst!(a::Vector, iter...) = prepend!(a, iter)
 prepend!(a::AbstractVector, iter...) = foldr((v, a) -> prepend!(a, v), iter, init=a)
 
 function _prepend!(a, ::Union{HasLength,HasShape}, iter)
+    @_terminates_locally_meta
     require_one_based_indexing(a)
     n = length(iter)
     _growbeg!(a, n)
@@ -1249,7 +1278,7 @@ function resize!(a::Vector, nl::Integer)
         _growend!(a, nl-l)
     elseif nl != l
         if nl < 0
-            throw(ArgumentError("new length must be ≥ 0"))
+            _throw_argerror("new length must be ≥ 0")
         end
         _deleteend!(a, l-nl)
     end
@@ -1324,7 +1353,7 @@ julia> pop!(Dict(1=>2))
 """
 function pop!(a::Vector)
     if isempty(a)
-        throw(ArgumentError("array must be non-empty"))
+        _throw_argerror("array must be non-empty")
     end
     item = a[end]
     _deleteend!(a, 1)
@@ -1412,11 +1441,12 @@ function pushfirst!(a::Vector{Any}, @nospecialize x)
     return a
 end
 function pushfirst!(a::Vector{Any}, @nospecialize x...)
+    @_terminates_locally_meta
     na = length(a)
     nx = length(x)
     _growbeg!(a, nx)
-    for i = 1:nx
-        a[i] = x[i]
+    @inbounds for i = 1:nx
+        a[i] = getfield(x,i)
     end
     return a
 end
@@ -1455,7 +1485,7 @@ julia> A
 """
 function popfirst!(a::Vector)
     if isempty(a)
-        throw(ArgumentError("array must be non-empty"))
+        _throw_argerror("array must be non-empty")
     end
     item = a[1]
     _deletebeg!(a, 1)
@@ -1595,7 +1625,7 @@ function _deleteat!(a::Vector, inds, dltd=Nowhere())
         (i,s) = y
         if !(q <= i <= n)
             if i < q
-                throw(ArgumentError("indices must be unique and sorted"))
+                _throw_argerror("indices must be unique and sorted")
             else
                 throw(BoundsError())
             end
@@ -1851,7 +1881,7 @@ for (f,_f) in ((:reverse,:_reverse), (:reverse!,:_reverse!))
         $_f(A::AbstractVector, ::Colon) = $f(A, firstindex(A), lastindex(A))
         $_f(A::AbstractVector, dim::Tuple{Integer}) = $_f(A, first(dim))
         function $_f(A::AbstractVector, dim::Integer)
-            dim == 1 || throw(ArgumentError("invalid dimension $dim ≠ 1"))
+            dim == 1 || _throw_argerror(LazyString("invalid dimension ", dim, " ≠ 1"))
             return $_f(A, :)
         end
     end
