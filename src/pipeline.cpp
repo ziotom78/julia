@@ -399,7 +399,7 @@ void buildFullPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLeve
             //We don't know if the loop end callbacks support MSSA
             FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM), /*UseMemorySSA = */false));
         }
-        FPM.addPass(LoopUnrollPass());
+        FPM.addPass(LoopUnrollPass(LoopUnrollOptions().setRuntime(false)));
         JULIA_PASS(FPM.addPass(AllocOptPass()));
         FPM.addPass(SROAPass());
         FPM.addPass(InstSimplifyPass());
@@ -535,7 +535,7 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
         return PIC;
     }
 
-    FunctionAnalysisManager createFAM(OptimizationLevel O, TargetIRAnalysis analysis, const Triple &triple) {
+    FunctionAnalysisManager createFAM(OptimizationLevel O, const Triple &triple) {
 
         FunctionAnalysisManager FAM;
         // Register the AA manager first so that our version is the one used.
@@ -550,7 +550,6 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
             return AA;
         });
         // Register our TargetLibraryInfoImpl.
-        FAM.registerPass([&] { return llvm::TargetIRAnalysis(analysis); });
         FAM.registerPass([&] { return llvm::TargetLibraryAnalysis(llvm::TargetLibraryInfoImpl(triple)); });
         return FAM;
     }
@@ -570,7 +569,7 @@ NewPM::NewPM(std::unique_ptr<TargetMachine> TM, OptimizationLevel O, Optimizatio
     PB(this->TM.get(), PipelineTuningOptions(), None, PIC.get()),
     MPM(createMPM(PB, O, options)), O(O) {}
 
-AnalysisManagers::AnalysisManagers(TargetMachine &TM, PassBuilder &PB, OptimizationLevel O) : LAM(), FAM(createFAM(O, TM.getTargetIRAnalysis(), TM.getTargetTriple())), CGAM(), MAM() {
+AnalysisManagers::AnalysisManagers(TargetMachine &TM, PassBuilder &PB, OptimizationLevel O) : LAM(), FAM(createFAM(O, TM.getTargetTriple())), CGAM(), MAM() {
     PB.registerLoopAnalyses(LAM);
     PB.registerFunctionAnalyses(FAM);
     PB.registerCGSCCAnalyses(CGAM);
