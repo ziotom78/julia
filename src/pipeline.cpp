@@ -86,7 +86,7 @@ using namespace llvm;
 namespace {
     //Shamelessly stolen from Clang's approach to sanitizers
     //TODO do we want to enable other sanitizers?
-    static void addSanitizerPasses(ModulePassManager &MPM, OptimizationLevel O) {
+    static void buildSanitizerPipeline(ModulePassManager &MPM, OptimizationLevel O) {
         // Coverage sanitizer
         // if (CodeGenOpts.hasSanitizeCoverage()) {
         //   auto SancovOpts = getSancovOptsFromCGOpts(CodeGenOpts);
@@ -173,7 +173,7 @@ namespace {
         // }
     }
 
-    void addVerificationPasses(ModulePassManager &MPM, bool llvm_only) {
+    void buildVerificationPipeline(ModulePassManager &MPM, bool llvm_only) {
         if (!llvm_only)
             MPM.addPass(llvm::createModuleToFunctionPassAdaptor(GCInvariantVerifierPass()));
         MPM.addPass(VerifierPass());
@@ -198,28 +198,6 @@ namespace {
             ;
     }
 
-    // TODO(vchuravy/maleadt):
-    // Since we are not using the PassBuilder fully and instead rolling our own, we are missing out on
-    // TargetMachine::registerPassBuilderCallbacks. We need to find a solution either in working with upstream
-    // or adapting PassBuilder (or subclassing it) to suite our needs. This is in particular important for
-    // BPF, NVPTX, and AMDGPU.
-    //TODO implement these once LLVM exposes
-    //the PassBuilder extension point callbacks
-    //For now we'll maintain the insertion points even though they don't do anything
-    //for the sake of documentation
-    //If PB is a nullptr, don't invoke anything (this happens when running julia from opt)
-    void invokePipelineStartCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokePeepholeEPCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeEarlySimplificationCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeCGSCCCallbacks(CGSCCPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeOptimizerEarlyCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeLateLoopOptimizationCallbacks(LoopPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeLoopOptimizerEndCallbacks(LoopPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeScalarOptimizerCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeVectorizerCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-    void invokeOptimizerLastCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
-}
-
 //The actual pipelines
 //TODO Things we might want to consider:
 //? annotation2metadata pass
@@ -242,244 +220,291 @@ namespace {
 
 #define JULIA_PASS(ADD_PASS) if (!options.llvm_only) { ADD_PASS; } else do;while (0)
 
-//Use for O1 and below
-void buildBasicPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
-// #ifdef JL_DEBUG_BUILD
-    addVerificationPasses(MPM, options.llvm_only);
-// #endif
-    invokePipelineStartCallbacks(MPM, PB, O);
-    MPM.addPass(ConstantMergePass());
-    if (!options.dump_native) {
-        JULIA_PASS(MPM.addPass(CPUFeatures()));
-        if (O.getSpeedupLevel() > 0) {
-            MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
+    static void buildStartSimplificationPipeline(ModulePassManager &MPM, OptimizationOptions options, OptimizationLevel O) {
+        MPM.addPass(ConstantMergePass());
+        if (O.getSpeedupLevel() > 1) {
+            FunctionPassManager FPM;
+            JULIA_PASS(FPM.addPass(PropagateJuliaAddrspacesPass()));
+            //TODO consider not using even basic simplification
+            //options here, and adding a run of CVP to take advantage
+            //of the unsimplified codegen information (e.g. known
+            //zeros or ones)
+            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
+            FPM.addPass(DCEPass());
+            FPM.addPass(SROAPass());
+            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+        } else {
+            if (!options.dump_native) {
+                JULIA_PASS(MPM.addPass(CPUFeatures()));
+                if (O.getSpeedupLevel() > 0) {
+                    MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
+                }
+            }
+            FunctionPassManager FPM;
+            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
+            if (O.getSpeedupLevel() > 0) {
+                FPM.addPass(SROAPass());
+                FPM.addPass(InstCombinePass());
+                FPM.addPass(EarlyCSEPass());
+            }
+            FPM.addPass(MemCpyOptPass());
+            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
         }
     }
-    {
-        FunctionPassManager FPM;
-        FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
-        if (O.getSpeedupLevel() > 0) {
-            FPM.addPass(SROAPass());
+
+    static void buildPostInliningOptimizationPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            JULIA_PASS(FPM.addPass(AllocOptPass()));
             FPM.addPass(InstCombinePass());
-            FPM.addPass(EarlyCSEPass());
+            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
         }
-        FPM.addPass(MemCpyOptPass());
+    }
+
+    static void buildPostCPUFeaturesSimplificationPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            FPM.addPass(SROAPass());
+            FPM.addPass(InstSimplifyPass());
+            FPM.addPass(JumpThreadingPass());
+            FPM.addPass(CorrelatedValuePropagationPass());
+            FPM.addPass(ReassociatePass());
+            FPM.addPass(EarlyCSEPass());
+            JULIA_PASS(FPM.addPass(AllocOptPass()));
+        } else if (O.getSpeedupLevel() == 1) {
+            FPM.addPass(InstSimplifyPass());
+            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
+        }
+    }
+
+    static void buildEarlyLoopPipeline(LoopPassManager &LPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            LPM.addPass(LoopRotatePass());
+        }
+    }
+
+    //IRCE allows "hoisting" of bounds checks
+    static void buildLoopHoistingPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            LoopPassManager LPM;
+    #if JL_LLVM_VERSION < 150000
+    #define LICMOptions()
+    #endif
+            LPM.addPass(LICMPass(LICMOptions()));
+            JULIA_PASS(LPM.addPass(JuliaLICMPass()));
+            LPM.addPass(SimpleLoopUnswitchPass());
+            LPM.addPass(LICMPass(LICMOptions()));
+            JULIA_PASS(LPM.addPass(JuliaLICMPass()));
+            //LICM needs MemorySSA now, so we must use it
+            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM), /*UseMemorySSA = */true));
+            FPM.addPass(IRCEPass());
+        }
+    
+    #if JL_LLVM_VERSION < 150000
+    #undef LICMOptions
+    #endif
+    }
+
+    static void buildEndLoopPipeline(LoopPassManager &LPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            LPM.addPass(LoopInstSimplifyPass());
+            LPM.addPass(LoopIdiomRecognizePass());
+            LPM.addPass(IndVarSimplifyPass());
+            LPM.addPass(LoopDeletionPass());
+        }
+    }
+
+    static void buildPeepholeOptimizationPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            FPM.addPass(LoopUnrollPass());
+            JULIA_PASS(FPM.addPass(AllocOptPass()));
+            FPM.addPass(SROAPass());
+            FPM.addPass(InstSimplifyPass());
+            FPM.addPass(GVNPass());
+            FPM.addPass(MemCpyOptPass());
+            FPM.addPass(SCCPPass());
+            FPM.addPass(CorrelatedValuePropagationPass());
+            FPM.addPass(DCEPass());
+            FPM.addPass(IRCEPass());
+            FPM.addPass(InstCombinePass());
+            FPM.addPass(JumpThreadingPass());
+            if (O.getSpeedupLevel() >= 3) {
+                FPM.addPass(GVNPass());
+            }
+            FPM.addPass(DSEPass());
+        }
+    }
+
+    static void buildScalarOptimizerPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
+            JULIA_PASS(FPM.addPass(AllocOptPass()));
+            {
+                LoopPassManager LPM;
+                LPM.addPass(LoopDeletionPass());
+                LPM.addPass(LoopInstSimplifyPass());
+                FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM)));
+            }
+        }
+    }
+
+    static void buildVectorizationPipeline(FunctionPassManager &FPM, OptimizationOptions options, OptimizationLevel O) {
+        if (O.getSpeedupLevel() > 1) {
+            //TODO look into loop vectorize options
+            FPM.addPass(LoopVectorizePass());
+            FPM.addPass(LoopLoadEliminationPass());
+            FPM.addPass(InstCombinePass());
+            FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
+            FPM.addPass(SLPVectorizerPass());
+            FPM.addPass(ADCEPass());
+            //TODO add BDCEPass here?
+        }
+    }
+
+    static void buildLateInstrinsicLoweringPipeline(ModulePassManager &MPM, OptimizationOptions options, OptimizationLevel O) {
+        if (options.lower_intrinsics) {
+            //TODO barrier pass?
+            {
+                FunctionPassManager FPM;
+                JULIA_PASS(FPM.addPass(LowerExcHandlers()));
+                JULIA_PASS(FPM.addPass(GCInvariantVerifierPass(false)));
+                MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+            }
+            // Needed **before** LateLowerGCFrame on LLVM < 12
+            // due to bug in `CreateAlignmentAssumption`.
+            JULIA_PASS(MPM.addPass(RemoveNI()));
+            JULIA_PASS(MPM.addPass(createModuleToFunctionPassAdaptor(LateLowerGC())));
+            JULIA_PASS(MPM.addPass(FinalLowerGCPass()));
+            if (O.getSpeedupLevel() > 1) {
+                FunctionPassManager FPM;
+                FPM.addPass(GVNPass());
+                FPM.addPass(SCCPPass());
+                FPM.addPass(DCEPass());
+                MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+            }
+            JULIA_PASS(MPM.addPass(LowerPTLSPass(options.dump_native)));
+            if (O.getSpeedupLevel() > 1) {
+                FunctionPassManager FPM;
+                FPM.addPass(InstCombinePass());
+                FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
+                MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+            }
+        } else {
+            JULIA_PASS(MPM.addPass(RemoveNI()));
+        }
+    }
+
+    static void buildEndStageOptimizationPipeline(ModulePassManager &MPM, OptimizationOptions options, OptimizationLevel O) {
+        FunctionPassManager FPM;
+        if (O.getSpeedupLevel() > 1) {
+            JULIA_PASS(FPM.addPass(CombineMulAdd()));
+            FPM.addPass(DivRemPairsPass());
+            JULIA_PASS(FPM.addPass(DemoteFloat16()));
+            FPM.addPass(GVNPass());
+        } else {
+            JULIA_PASS(DemoteFloat16());
+        }
         MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
     }
+
+    // TODO(vchuravy/maleadt):
+    // Since we are not using the PassBuilder fully and instead rolling our own, we are missing out on
+    // TargetMachine::registerPassBuilderCallbacks. We need to find a solution either in working with upstream
+    // or adapting PassBuilder (or subclassing it) to suite our needs. This is in particular important for
+    // BPF, NVPTX, and AMDGPU.
+    //TODO implement these once LLVM exposes
+    //the PassBuilder extension point callbacks
+    //For now we'll maintain the insertion points even though they don't do anything
+    //for the sake of documentation
+    //If PB is a nullptr, don't invoke anything (this happens when running julia from opt)
+    void invokePipelineStartCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokePeepholeEPCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeEarlySimplificationCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeCGSCCCallbacks(CGSCCPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeOptimizerEarlyCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeLateLoopOptimizationCallbacks(LoopPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeLoopOptimizerEndCallbacks(LoopPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeScalarOptimizerCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeVectorizerCallbacks(FunctionPassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+    void invokeOptimizerLastCallbacks(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O) {}
+}
+
+void buildPreMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
+// #ifdef JL_DEBUG_BUILD
+    buildVerificationPipeline(MPM, options.llvm_only);
+// #endif
+    invokePipelineStartCallbacks(MPM, PB, O);
+    buildStartSimplificationPipeline(MPM, options, O);
     invokeEarlySimplificationCallbacks(MPM, PB, O);
     MPM.addPass(AlwaysInlinerPass());
     {
         CGSCCPassManager CGPM;
         invokeCGSCCCallbacks(CGPM, PB, O);
-        MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPM)));
+        if (!CGPM.isEmpty())
+            MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPM)));
+    }
+    {
+        FunctionPassManager FPM;
+        buildPostInliningOptimizationPipeline(FPM, options, O);
+        if (!FPM.isEmpty())
+            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
     }
     invokeOptimizerEarlyCallbacks(MPM, PB, O);
+}
+
+void buildPostMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
+    if (options.dump_native || O.getSpeedupLevel() > 1) {
+        JULIA_PASS(MPM.addPass(CPUFeatures()));
+        {
+            FunctionPassManager FPM;
+            buildPostCPUFeaturesSimplificationPipeline(FPM, options, O);
+            if (!FPM.isEmpty())
+                MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+        }
+    }
     JULIA_PASS(MPM.addPass(LowerSIMDLoop()));
     {
         FunctionPassManager FPM;
         {
             LoopPassManager LPM;
+            buildEarlyLoopPipeline(LPM, options, O);
             invokeLateLoopOptimizationCallbacks(LPM, PB, O);
-            invokeLoopOptimizerEndCallbacks(LPM, PB, O);
-            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM)));
-        }
-        invokeScalarOptimizerCallbacks(FPM, PB, O);
-        invokeVectorizerCallbacks(FPM, PB, O);
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    }
-    if (options.lower_intrinsics) {
-        //TODO no barrier pass?
-        {
-            FunctionPassManager FPM;
-            JULIA_PASS(FPM.addPass(LowerExcHandlers()));
-            JULIA_PASS(FPM.addPass(GCInvariantVerifierPass(false)));
-            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-        }
-        JULIA_PASS(MPM.addPass(RemoveNI()));
-        JULIA_PASS(MPM.addPass(createModuleToFunctionPassAdaptor(LateLowerGC())));
-        JULIA_PASS(MPM.addPass(FinalLowerGCPass()));
-        JULIA_PASS(MPM.addPass(LowerPTLSPass(options.dump_native)));
-    } else {
-        JULIA_PASS(MPM.addPass(RemoveNI()));
-    }
-    JULIA_PASS(MPM.addPass(LowerSIMDLoop())); // TODO why do we do this twice
-    if (options.dump_native) {
-        JULIA_PASS(MPM.addPass(MultiVersioning(options.external_use)));
-        JULIA_PASS(MPM.addPass(CPUFeatures()));
-        if (O.getSpeedupLevel() > 0) {
-            FunctionPassManager FPM;
-            FPM.addPass(InstSimplifyPass());
-            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
-            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-        }
-    }
-    invokeOptimizerLastCallbacks(MPM, PB, O);
-    addSanitizerPasses(MPM, O);
-    JULIA_PASS(MPM.addPass(createModuleToFunctionPassAdaptor(DemoteFloat16())));
-}
-
-//Use for O2 and above
-void buildFullPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
-// #ifdef JL_DEBUG_BUILD
-    addVerificationPasses(MPM, options.llvm_only);
-// #endif
-    invokePipelineStartCallbacks(MPM, PB, O);
-    MPM.addPass(ConstantMergePass());
-    {
-        FunctionPassManager FPM;
-        JULIA_PASS(FPM.addPass(PropagateJuliaAddrspacesPass()));
-        //TODO consider not using even basic simplification
-        //options here, and adding a run of CVP to take advantage
-        //of the unsimplified codegen information (e.g. known
-        //zeros or ones)
-        FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
-        FPM.addPass(DCEPass());
-        FPM.addPass(SROAPass());
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    }
-    invokeEarlySimplificationCallbacks(MPM, PB, O);
-    MPM.addPass(AlwaysInlinerPass());
-    invokeOptimizerEarlyCallbacks(MPM, PB, O);
-    {
-        CGSCCPassManager CGPM;
-        invokeCGSCCCallbacks(CGPM, PB, O);
-        {
-            FunctionPassManager FPM;
-            JULIA_PASS(FPM.addPass(AllocOptPass()));
-            FPM.addPass(InstCombinePass());
-            FPM.addPass(SimplifyCFGPass(basicSimplifyCFGOptions()));
-            CGPM.addPass(createCGSCCToFunctionPassAdaptor(std::move(FPM)));
-        }
-        MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPM)));
-    }
-    if (options.dump_native) {
-        JULIA_PASS(MPM.addPass(MultiVersioning(options.external_use)));
-    }
-    JULIA_PASS(MPM.addPass(CPUFeatures()));
-    {
-        FunctionPassManager FPM;
-        FPM.addPass(SROAPass());
-        FPM.addPass(InstSimplifyPass());
-        FPM.addPass(JumpThreadingPass());
-        FPM.addPass(CorrelatedValuePropagationPass());
-        FPM.addPass(ReassociatePass());
-        FPM.addPass(EarlyCSEPass());
-        JULIA_PASS(FPM.addPass(AllocOptPass()));
-        invokePeepholeEPCallbacks(FPM, PB, O);
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    }
-    MPM.addPass(LowerSIMDLoop());
-    {
-        FunctionPassManager FPM;
-        {
-            LoopPassManager LPM1, LPM2;
-            LPM1.addPass(LoopRotatePass());
-            invokeLateLoopOptimizationCallbacks(LPM1, PB, O);
             //We don't know if the loop callbacks support MSSA
-            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM1), /*UseMemorySSA = */false));
-#if JL_LLVM_VERSION < 150000
-#define LICMOptions()
-#endif
-            LPM2.addPass(LICMPass(LICMOptions()));
-            JULIA_PASS(LPM2.addPass(JuliaLICMPass()));
-            LPM2.addPass(SimpleLoopUnswitchPass());
-            LPM2.addPass(LICMPass(LICMOptions()));
-            JULIA_PASS(LPM2.addPass(JuliaLICMPass()));
-            //LICM needs MemorySSA now, so we must use it
-            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM2), /*UseMemorySSA = */true));
+            if (!LPM.isEmpty())
+                FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM), /*UseMemorySSA = */false));
         }
-        FPM.addPass(IRCEPass());
+        buildLoopHoistingPipeline(FPM, options, O);
         {
             LoopPassManager LPM;
-            LPM.addPass(LoopInstSimplifyPass());
-            LPM.addPass(LoopIdiomRecognizePass());
-            LPM.addPass(IndVarSimplifyPass());
-            LPM.addPass(LoopDeletionPass());
+            buildEndLoopPipeline(LPM, options, O);
             invokeLoopOptimizerEndCallbacks(LPM, PB, O);
             //We don't know if the loop end callbacks support MSSA
-            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM), /*UseMemorySSA = */false));
+            if (!LPM.isEmpty())
+                FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM), /*UseMemorySSA = */false));
         }
-        FPM.addPass(LoopUnrollPass());
-        JULIA_PASS(FPM.addPass(AllocOptPass()));
-        FPM.addPass(SROAPass());
-        FPM.addPass(InstSimplifyPass());
-        FPM.addPass(GVNPass());
-        FPM.addPass(MemCpyOptPass());
-        FPM.addPass(SCCPPass());
-        FPM.addPass(CorrelatedValuePropagationPass());
-        FPM.addPass(DCEPass());
-        FPM.addPass(IRCEPass());
-        FPM.addPass(InstCombinePass());
-        FPM.addPass(JumpThreadingPass());
-        if (O.getSpeedupLevel() >= 3) {
-            FPM.addPass(GVNPass());
-        }
-        FPM.addPass(DSEPass());
+        buildPeepholeOptimizationPipeline(FPM, options, O);
         invokePeepholeEPCallbacks(FPM, PB, O);
-        FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
-        JULIA_PASS(FPM.addPass(AllocOptPass()));
-        {
-            LoopPassManager LPM;
-            LPM.addPass(LoopDeletionPass());
-            LPM.addPass(LoopInstSimplifyPass());
-            FPM.addPass(createFunctionToLoopPassAdaptor(std::move(LPM)));
-        }
+        buildScalarOptimizerPipeline(FPM, options, O);
         invokeScalarOptimizerCallbacks(FPM, PB, O);
-        //TODO look into loop vectorize options
-        FPM.addPass(LoopVectorizePass());
-        FPM.addPass(LoopLoadEliminationPass());
-        FPM.addPass(InstCombinePass());
-        FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
-        FPM.addPass(SLPVectorizerPass());
+        buildVectorizationPipeline(FPM, options, O);
         invokeVectorizerCallbacks(FPM, PB, O);
-        FPM.addPass(ADCEPass());
-        //TODO add BDCEPass here?
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    }
-    if (options.lower_intrinsics) {
-        //TODO barrier pass?
-        {
-            FunctionPassManager FPM;
-            JULIA_PASS(FPM.addPass(LowerExcHandlers()));
-            JULIA_PASS(FPM.addPass(GCInvariantVerifierPass(false)));
+        if (!FPM.isEmpty())
             MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-        }
-        // Needed **before** LateLowerGCFrame on LLVM < 12
-        // due to bug in `CreateAlignmentAssumption`.
-        JULIA_PASS(MPM.addPass(RemoveNI()));
-        JULIA_PASS(MPM.addPass(createModuleToFunctionPassAdaptor(LateLowerGC())));
-        JULIA_PASS(MPM.addPass(FinalLowerGCPass()));
-        {
-            FunctionPassManager FPM;
-            FPM.addPass(GVNPass());
-            FPM.addPass(SCCPPass());
-            FPM.addPass(DCEPass());
-            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-        }
-        JULIA_PASS(MPM.addPass(LowerPTLSPass(options.dump_native)));
-        {
-            FunctionPassManager FPM;
-            FPM.addPass(InstCombinePass());
-            FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
-            MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-        }
-    } else {
-        JULIA_PASS(MPM.addPass(RemoveNI()));
     }
-    {
-        FunctionPassManager FPM;
-        JULIA_PASS(FPM.addPass(CombineMulAdd()));
-        FPM.addPass(DivRemPairsPass());
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    }
+}
+
+void buildFinalOptimizationPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
+    buildLateInstrinsicLoweringPipeline(MPM, options, O);
+    buildEndStageOptimizationPipeline(MPM, options, O);
+    buildSanitizerPipeline(MPM, O);
     invokeOptimizerLastCallbacks(MPM, PB, O);
-    addSanitizerPasses(MPM, O);
-    {
-        FunctionPassManager FPM;
-        JULIA_PASS(FPM.addPass(DemoteFloat16()));
-        FPM.addPass(GVNPass());
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+}
+
+void buildFullPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
+    buildPreMultiversioningPipeline(MPM, PB, O, options);
+    if (options.dump_native) {
+        JULIA_PASS(MPM.addPass(MultiVersioning(options.external_use)));
     }
+    buildPostMultiversioningPipeline(MPM, PB, O, options);
+    buildFinalOptimizationPipeline(MPM, PB, O, options);
 }
 
 #undef JULIA_PASS
@@ -560,10 +585,7 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
 
     ModulePassManager createMPM(PassBuilder &PB, OptimizationLevel O, OptimizationOptions options) {
         ModulePassManager MPM;
-        if (O.getSpeedupLevel() < 2)
-            buildBasicPipeline(MPM, &PB, O, options);
-        else
-            buildFullPipeline(MPM, &PB, O, options);
+        buildFullPipeline(MPM, &PB, O, options);
         return MPM;
     }
 }
@@ -690,11 +712,7 @@ void registerCallbacks(PassBuilder &PB) {
             auto julia_options = parseJuliaPipelineOptions(Name);
             if (julia_options) {
                 ModulePassManager pipeline;
-                if (julia_options->first.getSpeedupLevel() < 2) {
-                    buildBasicPipeline(pipeline, nullptr, julia_options->first, julia_options->second);
-                } else {
-                    buildFullPipeline(pipeline, nullptr, julia_options->first, julia_options->second);
-                }
+                buildFullPipeline(pipeline, nullptr, julia_options->first, julia_options->second);
                 PM.addPass(std::move(pipeline));
                 return true;
             }
