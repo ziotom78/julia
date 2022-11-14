@@ -140,10 +140,11 @@ GlobalVariable *LowerPTLS::create_aliased_global(Type *T, StringRef name) const
     // the address is visible externally but LLVM can still assume that the
     // address of this variable doesn't need dynamic relocation
     // (can be accessed with a single PC-rel load).
-    auto GV = new GlobalVariable(*M, T, false, GlobalVariable::InternalLinkage,
+    auto GV = new GlobalVariable(*M, T, false, GlobalVariable::LinkOnceAnyLinkage,
                                  Constant::getNullValue(T), name + ".real");
-    add_comdat(GlobalAlias::create(T, 0, GlobalVariable::ExternalLinkage,
-                                   name, GV, M));
+    auto GA = GlobalAlias::create(T, 0, GlobalVariable::LinkOnceAnyLinkage,
+                                   name, GV, M);
+    add_comdat(GA);
     return GV;
 }
 

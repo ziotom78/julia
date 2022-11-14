@@ -24,6 +24,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Linker/Linker.h>
 #include <llvm/Transforms/IPO.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Vectorize.h>
@@ -49,6 +50,7 @@
 #endif
 
 // for outputting code
+#include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Bitcode/BitcodeWriterPass.h>
 #include "llvm/Object/ArchiveWriter.h"
@@ -252,6 +254,159 @@ static void jl_ci_cache_lookup(const jl_cgparams_t &cgparams, jl_method_instance
         }
     }
     *ci_out = codeinst;
+}
+
+static auto deserializeModule(const SmallVector<char, 0> &Bitcode, LLVMContext &Ctx) {
+    auto M = cantFail(getLazyBitcodeModule(MemoryBufferRef(StringRef(Bitcode.data(), Bitcode.size()), "Optimized"), Ctx), "Error loading module");
+    cantFail(M->materializeAll());
+    // assert(!verifyModule(*M, &errs()) && "Module verification failed");
+    return M;
+}
+
+void buildPreMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options);
+void buildPostMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options);
+std::unique_ptr<PassInstrumentationCallbacks> createPIC(StandardInstrumentations &SI);
+
+static auto serializeModule(const Module &M) {
+    SmallVector<char, 0> ClonedModuleBuffer;
+    BitcodeWriter BCWriter(ClonedModuleBuffer);
+    BCWriter.writeModule(M);
+    BCWriter.writeSymtab();
+    BCWriter.writeStrtab();
+    return ClonedModuleBuffer;
+}
+
+static void bulkOptimize(Module &M, TargetMachine &TM, OptimizationLevel O) {
+    constexpr size_t MaxThreads = 4;
+    auto createTM = [&TM](){
+        return std::unique_ptr<TargetMachine>(
+                                        TM.getTarget().createTargetMachine(
+                                            TM.getTargetTriple().str(),
+                                            TM.getTargetCPU().str(),
+                                            TM.getTargetFeatureString(),
+                                            TM.Options,
+                                            TM.getRelocationModel(),
+                                            TM.getCodeModel(),
+                                            TM.getOptLevel()));
+    };
+    if (M.size() < std::max(MaxThreads, size_t(2000))) {
+        // Don't bother with the bulk optimization pass if there are only a few
+        NewPM PM(createTM(), O, OptimizationOptions::defaults(true, true));
+        PM.run(M);
+        return;
+    }
+    SmallVector<std::pair<uint64_t, StringRef>, 0> Funcs; // cumulative bb count, name
+    std::array<StringSet<>, MaxThreads> Inputs; // [i, i+1) functions to optimize for thread i
+    std::array<SmallVector<char, 0>, MaxThreads> Outputs; // serialized optimized modules
+
+    //Run early simplification
+    //Splitting this up is probably not worth it,
+    //since the extra effort of cloning the function
+    //and then merging it back into the original module
+    //is going to be a big drain on time anyways
+    //Since we're not splitting it up, run multiversioning
+    //here as well
+#define RUN_PIPELINE(Pipeline, M, TM, multiversioning) \
+    do { \
+        StandardInstrumentations SI(false); \
+        auto PIC = createPIC(SI); \
+        PassBuilder PB(&TM, PipelineTuningOptions(), None, PIC.get()); \
+        ModulePassManager MPM; \
+        Pipeline(MPM, &PB, O, OptimizationOptions::defaults(true, true)); \
+        if (multiversioning) \
+            MPM.addPass(MultiVersioning()); \
+        AnalysisManagers AM(TM, PB, O); \
+        MPM.run(M, AM.MAM); \
+    } while (0)
+
+    dbgs() << "Running early simplification\n";
+    uint64_t start = jl_hrtime();
+    StringMap<GlobalValue::LinkageTypes> LinkageMap;
+    RUN_PIPELINE(buildPreMultiversioningPipeline, M, TM, true);
+    uint64_t end = jl_hrtime();
+    dbgs() << "Early simplification took " << (end - start) / 1e9 << " seconds\n";
+
+
+    start = jl_hrtime();
+    size_t id = 0;
+    for (auto &GV : M.global_values()) {
+        if (GV.getLinkage() == GlobalValue::ExternalLinkage)
+            continue;
+        if (!GV.hasName()) {
+            GV.setName("jl_ext_" + std::to_string(id++));
+        }
+        LinkageMap[GV.getName()] = GV.getLinkage();
+        GV.setLinkage(GlobalValue::ExternalLinkage);
+    }
+    end = jl_hrtime();
+    dbgs() << "Resetting linkages took " << (end - start) / 1e9 << " seconds\n";
+    SmallVector<char, 0> Serialized = serializeModule(M);
+    std::mutex Latch;
+    std::condition_variable Waiter;
+    bool Start = false;
+    //Set up optimizer thread pool
+    std::array<std::thread, MaxThreads> Optimizers;
+    for (size_t i = 0; i < Optimizers.size(); i++) {
+        Optimizers[i] = std::thread([&, i](){
+            dbgs() << "Starting optimizer thread " << i << "\n";
+            LLVMContext Ctx;
+            auto Orig = deserializeModule(Serialized, Ctx);
+            dbgs() << "Deserialized module\n";
+            auto TM = createTM();
+            {
+                std::unique_lock<std::mutex> Lock(Latch);
+                Waiter.wait(Lock, [&](){ return Start; });
+            }
+            ValueToValueMapTy VMap;
+            const auto &Input = Inputs[i];
+            auto M = CloneModule(*Orig, VMap, [&](const GlobalValue *GV) {
+                return Input.contains(GV->getName());
+            });
+            dbgs() << "Starting optimization\n";
+            start = jl_hrtime();
+            RUN_PIPELINE(buildPostMultiversioningPipeline, *M, *TM, false);
+            Outputs[i] = serializeModule(*M);
+            dbgs() << "Thread " << i << " finished optimization\n";
+            end = jl_hrtime();
+            dbgs() << "Optimization took " << (end - start) / 1e9 << " seconds\n";
+            dbgs() << "Optimizer thread exiting\n";
+        });
+    }
+    //Partition modules
+    //Be a little bit good about giving equal work to each thread
+    //later ones can be overweight because we'll be merging while
+    //they're finishing optimization
+    for (auto &F : M.functions()) {
+        if (F.isDeclaration())
+            continue;
+        Funcs.emplace_back(F.size(), F.getName());
+    }
+    std::sort(Funcs.begin(), Funcs.end());
+    dbgs() << "Total function count: " << Funcs.size() << "\n";
+    for (size_t i = 0; i < Funcs.size(); i++) {
+        Inputs[i % MaxThreads].insert(Funcs[i].second);
+    }
+    {
+        std::lock_guard<std::mutex> Lock(Latch);
+        Start = true;
+    }
+    Waiter.notify_all();
+    Linker L(M);
+    for (size_t i = 0; i < Optimizers.size(); i++) {
+        Optimizers[i].join();
+        dbgs() << "Linking optimizer thread " << i << "\n";
+        bool Error = L.linkInModule(deserializeModule(Outputs[i], M.getContext()), Linker::OverrideFromSrc);
+        assert(!Error && "Linking failed");
+        (void) Error;
+    }
+
+    //Restore linkages
+    for (auto &GV : M.global_values()) {
+        auto it = LinkageMap.find(GV.getName());
+        if (it != LinkageMap.end()) {
+            GV.setLinkage(it->second);
+        }
+    }
 }
 
 // takes the running content that has collected in the shadow module and dump it to disk
@@ -555,14 +710,14 @@ void jl_dump_native_impl(void *native_code,
     dataM->setTargetTriple(TM->getTargetTriple().str());
     dataM->setDataLayout(jl_create_datalayout(*TM));
 
-#ifndef JL_USE_NEW_PM
-    legacy::PassManager optimizer;
-    addTargetPasses(&optimizer, TM->getTargetTriple(), TM->getTargetIRAnalysis());
-    addOptimizationPasses(&optimizer, jl_options.opt_level, true, true);
-    addMachinePasses(&optimizer, jl_options.opt_level);
-#else
-    NewPM optimizer{std::move(TM), getOptLevel(jl_options.opt_level), OptimizationOptions::defaults(true, true)};
-#endif
+// #ifndef JL_USE_NEW_PM
+//     legacy::PassManager optimizer;
+//     addTargetPasses(&optimizer, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+//     addOptimizationPasses(&optimizer, jl_options.opt_level, true, true);
+//     addMachinePasses(&optimizer, jl_options.opt_level);
+// #else
+//     NewPM optimizer{std::move(TM), getOptLevel(jl_options.opt_level), OptimizationOptions::defaults(true, true)};
+// #endif
 
     Type *T_size;
     if (sizeof(size_t) == 8)
@@ -592,7 +747,8 @@ void jl_dump_native_impl(void *native_code,
         preopt.run(M, empty.MAM);
         if (bc_fname || obj_fname || asm_fname) {
             assert(!verifyModule(M, &errs()));
-            optimizer.run(M);
+            // optimizer.run(M);
+            bulkOptimize(M, *TM, getOptLevel(jl_options.opt_level));
             assert(!verifyModule(M, &errs()));
         }
 

@@ -380,6 +380,13 @@ namespace {
                 FPM.addPass(DCEPass());
                 MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
             }
+        } else {
+            JULIA_PASS(MPM.addPass(RemoveNI()));
+        }
+    }
+
+    static void buildPTLSLoweringPipeline(ModulePassManager &MPM, OptimizationOptions options, OptimizationLevel O) {
+        if (options.lower_intrinsics) {
             JULIA_PASS(MPM.addPass(LowerPTLSPass(options.dump_native)));
             if (O.getSpeedupLevel() > 1) {
                 FunctionPassManager FPM;
@@ -387,8 +394,6 @@ namespace {
                 FPM.addPass(SimplifyCFGPass(aggressiveSimplifyCFGOptions()));
                 MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
             }
-        } else {
-            JULIA_PASS(MPM.addPass(RemoveNI()));
         }
     }
 
@@ -489,10 +494,8 @@ void buildPostMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, O
         if (!FPM.isEmpty())
             MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
     }
-}
-
-void buildFinalOptimizationPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options) {
     buildLateInstrinsicLoweringPipeline(MPM, options, O);
+    buildPTLSLoweringPipeline(MPM, options, O);
     buildEndStageOptimizationPipeline(MPM, options, O);
     buildSanitizerPipeline(MPM, O);
     invokeOptimizerLastCallbacks(MPM, PB, O);
@@ -504,14 +507,12 @@ void buildFullPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLeve
         JULIA_PASS(MPM.addPass(MultiVersioning(options.external_use)));
     }
     buildPostMultiversioningPipeline(MPM, PB, O, options);
-    buildFinalOptimizationPipeline(MPM, PB, O, options);
 }
 
 #undef JULIA_PASS
 
-namespace {
-    auto createPIC(StandardInstrumentations &SI) {
-        auto PIC = std::make_unique<PassInstrumentationCallbacks>();
+std::unique_ptr<PassInstrumentationCallbacks> createPIC(StandardInstrumentations &SI) {
+    auto PIC = std::make_unique<PassInstrumentationCallbacks>();
 //Borrowed from LLVM PassBuilder.cpp:386
 #define MODULE_PASS(NAME, CREATE_PASS)                                         \
 PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
@@ -556,9 +557,11 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
 #undef CGSCC_PASS_WITH_PARAMS
 #undef CGSCC_ANALYSIS
 
-        SI.registerCallbacks(*PIC);
-        return PIC;
-    }
+    SI.registerCallbacks(*PIC);
+    return PIC;
+}
+
+namespace {
 
     FunctionAnalysisManager createFAM(OptimizationLevel O, TargetIRAnalysis analysis, const Triple &triple) {
 
