@@ -55,6 +55,7 @@
 #include <llvm/Bitcode/BitcodeWriterPass.h>
 #include "llvm/Object/ArchiveWriter.h"
 #include <llvm/IR/IRPrintingPasses.h>
+#include <llvm/Support/SmallVectorMemoryBuffer.h>
 
 #include <llvm/IR/LegacyPassManagers.h>
 #include <llvm/Transforms/Utils/Cloning.h>
@@ -263,6 +264,22 @@ static auto deserializeModule(const SmallVector<char, 0> &Bitcode, LLVMContext &
     return M;
 }
 
+static auto createTMCreator(TargetMachine &TM) {
+    return [&TM](){
+        return std::unique_ptr<TargetMachine>(
+                                        TM.getTarget().createTargetMachine(
+                                            TM.getTargetTriple().str(),
+                                            TM.getTargetCPU().str(),
+                                            TM.getTargetFeatureString(),
+                                            TM.Options,
+                                            TM.getRelocationModel(),
+                                            TM.getCodeModel(),
+                                            TM.getOptLevel()));
+    };
+}
+
+constexpr size_t MaxThreads = 4;
+
 void buildPreMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options);
 void buildPostMultiversioningPipeline(ModulePassManager &MPM, PassBuilder *PB, OptimizationLevel O, OptimizationOptions options);
 std::unique_ptr<PassInstrumentationCallbacks> createPIC(StandardInstrumentations &SI);
@@ -276,19 +293,25 @@ static auto serializeModule(const Module &M) {
     return ClonedModuleBuffer;
 }
 
+static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
+{
+    Function *target = M.getFunction(alias);
+    if (!target) {
+        target = Function::Create(FT, Function::ExternalLinkage, alias, M);
+    }
+    Function *interposer = Function::Create(FT, Function::WeakAnyLinkage, name, M);
+    appendToCompilerUsed(M, {interposer});
+
+    llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", interposer));
+    SmallVector<Value *, 4> CallArgs;
+    for (auto &arg : interposer->args())
+        CallArgs.push_back(&arg);
+    auto val = builder.CreateCall(target, CallArgs);
+    builder.CreateRet(val);
+}
+
 static void bulkOptimize(Module &M, TargetMachine &TM, OptimizationLevel O) {
-    constexpr size_t MaxThreads = 4;
-    auto createTM = [&TM](){
-        return std::unique_ptr<TargetMachine>(
-                                        TM.getTarget().createTargetMachine(
-                                            TM.getTargetTriple().str(),
-                                            TM.getTargetCPU().str(),
-                                            TM.getTargetFeatureString(),
-                                            TM.Options,
-                                            TM.getRelocationModel(),
-                                            TM.getCodeModel(),
-                                            TM.getOptLevel()));
-    };
+    auto createTM = createTMCreator(TM);
     if (M.size() < std::max(MaxThreads, size_t(2000))) {
         // Don't bother with the bulk optimization pass if there are only a few
         NewPM PM(createTM(), O, OptimizationOptions::defaults(true, true));
@@ -365,6 +388,20 @@ static void bulkOptimize(Module &M, TargetMachine &TM, OptimizationLevel O) {
             dbgs() << "Starting optimization\n";
             start = jl_hrtime();
             RUN_PIPELINE(buildPostMultiversioningPipeline, *M, *TM, false);
+            // We would like to emit an alias or an weakref alias to redirect these symbols
+            // but LLVM doesn't let us emit a GlobalAlias to a declaration...
+            // So for now we inject a definition of these functions that calls our runtime
+            // functions. We do so after optimization to avoid cloning these functions.
+            injectCRTAlias(*M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
+                    FunctionType::get(Type::getFloatTy(Ctx), { Type::getHalfTy(Ctx) }, false));
+            injectCRTAlias(*M, "__extendhfsf2", "julia__gnu_h2f_ieee",
+                    FunctionType::get(Type::getFloatTy(Ctx), { Type::getHalfTy(Ctx) }, false));
+            injectCRTAlias(*M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee",
+                    FunctionType::get(Type::getHalfTy(Ctx), { Type::getFloatTy(Ctx) }, false));
+            injectCRTAlias(*M, "__truncsfhf2", "julia__gnu_f2h_ieee",
+                    FunctionType::get(Type::getHalfTy(Ctx), { Type::getFloatTy(Ctx) }, false));
+            injectCRTAlias(*M, "__truncdfhf2", "julia__truncdfhf2",
+                    FunctionType::get(Type::getHalfTy(Ctx), { Type::getDoubleTy(Ctx) }, false));
             Outputs[i] = serializeModule(*M);
             dbgs() << "Thread " << i << " finished optimization\n";
             end = jl_hrtime();
@@ -400,13 +437,166 @@ static void bulkOptimize(Module &M, TargetMachine &TM, OptimizationLevel O) {
         (void) Error;
     }
 
-    //Restore linkages
+    // Restore linkages
     for (auto &GV : M.global_values()) {
         auto it = LinkageMap.find(GV.getName());
         if (it != LinkageMap.end()) {
             GV.setLinkage(it->second);
         }
     }
+}
+
+static void emit_result(std::vector<NewArchiveMember> &Archive, SmallVectorImpl<char> &OS,
+        StringRef Name, std::vector<std::string> &outputs)
+{
+    outputs.push_back({ OS.data(), OS.size() });
+    Archive.push_back(NewArchiveMember(MemoryBufferRef(outputs.back(), Name)));
+    OS.clear();
+}
+
+static void doCodegen(Module &M, TargetMachine &TM, StringRef ObjName, StringRef AsmName, std::vector<NewArchiveMember> &ObjFiles, std::vector<NewArchiveMember> &AsmFiles, std::vector<std::string> &outputs) {
+    assert((!ObjName.empty() || !AsmName.empty()) && "No output specified");
+    legacy::PassManager Emitter;
+    SmallVector<char, 0> ObjBuffer;
+    raw_svector_ostream ObjStream(ObjBuffer);
+    SmallVector<char, 0> AsmBuffer;
+    raw_svector_ostream AsmStream(AsmBuffer);
+    //Is this necessary for TM?
+    addTargetPasses(&Emitter, TM.getTargetTriple(), TM.getTargetIRAnalysis());
+    if (!ObjName.empty())
+        if (TM.addPassesToEmitFile(Emitter, ObjStream, nullptr, CGFT_ObjectFile, false))
+            jl_safe_printf("ERROR: target does not support generation of object files\n");
+    if (!AsmName.empty())
+        if (TM.addPassesToEmitFile(Emitter, AsmStream, nullptr, CGFT_AssemblyFile, false))
+            jl_safe_printf("ERROR: target does not support generation of object files\n");
+    Emitter.run(M);
+    if (!ObjName.empty())
+        emit_result(ObjFiles, ObjBuffer, ObjName, outputs);
+    if (!AsmName.empty())
+        emit_result(AsmFiles, AsmBuffer, AsmName, outputs);
+}
+
+static void bulkEmit(Module &M, TargetMachine &TM, std::vector<NewArchiveMember> &ObjFiles, std::vector<NewArchiveMember> &AsmFiles, StringRef obj_Name, StringRef asm_Name, std::vector<std::string> &outputs) {
+    auto createTM = createTMCreator(TM);
+    if (M.size() < std::max(MaxThreads, size_t(2000))) {
+        dbgs() << "Running single threaded codegen\n";
+        uint64_t start = jl_hrtime();
+        doCodegen(M, TM, obj_Name, asm_Name, ObjFiles, AsmFiles, outputs);
+        uint64_t end = jl_hrtime();
+        dbgs() << "Codegen took " << (end - start) / 1e9 << " seconds\n";
+        return;
+    }
+    SmallVector<std::pair<uint64_t, StringRef>, 0> Funcs; // bb count, name
+    std::array<StringSet<>, MaxThreads> Inputs; // [i, i+1) functions to optimize for thread i
+    SmallVector<char, 0> Serialized = serializeModule(M);
+    std::mutex OutputMutex;
+    std::condition_variable Waiter;
+    bool Start = false;
+    std::array<std::thread, MaxThreads> Workers;
+    for (size_t i = 0; i < Workers.size(); i++) {
+        Workers[i] = std::thread([&, i](){
+            dbgs() << "Codegen thread " << i << " starting\n";
+            LLVMContext Ctx;
+            uint64_t start = jl_hrtime();
+            auto Orig = deserializeModule(Serialized, Ctx);
+            uint64_t end = jl_hrtime();
+            dbgs() << "Deserialization took " << (end - start) / 1e9 << " seconds\n";
+            auto TM = createTM();
+            {
+                std::unique_lock<std::mutex> Lock(OutputMutex);
+                Waiter.wait(Lock, [&](){ return Start; });
+            }
+            ValueToValueMapTy VMap;
+            const auto &Input = Inputs[i];
+            auto M = CloneModule(*Orig, VMap, [&](const GlobalValue *GV) {
+                return Input.contains(GV->getName());
+            });
+            dbgs() << "Starting emission\n";
+            start = jl_hrtime();
+            std::vector<NewArchiveMember> ObjFile;
+            std::vector<NewArchiveMember> AsmFile;
+            std::vector<std::string> output;
+            doCodegen(*M, *TM,
+                obj_Name.empty() ? StringRef() : StringRef((obj_Name + "_" + std::to_string(i)).str()),
+                asm_Name.empty() ? StringRef() : StringRef((asm_Name + "_" + std::to_string(i)).str()),
+                ObjFile, AsmFile, output);
+            end = jl_hrtime();
+            dbgs() << "Emission took " << (end - start) / 1e9 << " seconds\n";
+            {
+                std::lock_guard<std::mutex> Lock(OutputMutex);
+                ObjFiles.insert(ObjFiles.end(), std::make_move_iterator(ObjFile.begin()), std::make_move_iterator(ObjFile.end()));
+                AsmFiles.insert(AsmFiles.end(), std::make_move_iterator(AsmFile.begin()), std::make_move_iterator(AsmFile.end()));
+                outputs.insert(outputs.end(), std::make_move_iterator(output.begin()), std::make_move_iterator(output.end()));
+            }
+        });
+    }
+    //Partition modules
+    //Be a little bit good about giving equal work to each thread
+    //later ones can be overweight because we'll be merging while
+    //they're finishing optimization
+    for (auto &F : M.functions()) {
+        if (F.isDeclaration())
+            continue;
+        Funcs.emplace_back(F.size(), F.getName());
+    }
+    std::sort(Funcs.begin(), Funcs.end());
+    dbgs() << "Total function count: " << Funcs.size() << "\n";
+    for (size_t i = 0; i < Funcs.size(); i++) {
+        Inputs[i % MaxThreads].insert(Funcs[i].second);
+    }
+    for (auto &GA : M.aliases()) {
+        auto Aliasee = GA.getAliaseeObject();
+        assert(Aliasee && "Expected aliasee to exist");
+        if (!isa<Function>(Aliasee))
+            continue;
+        bool Found = false;
+        for (size_t i = 0; i < MaxThreads; i++) {
+            if (Inputs[i].contains(Aliasee->getName())) {
+                Inputs[i].insert(GA.getName());
+                Found = true;
+                break;
+            }
+        }
+        assert(Found && "Expected aliasee to be in a partition");
+    }
+    {
+        std::lock_guard<std::mutex> Lock(OutputMutex);
+        Start = true;
+    }
+    Waiter.notify_all();
+    ValueToValueMapTy VMap;
+    auto GVs = CloneModule(M, VMap, [](const GlobalValue *GV) {
+        return !isa<Function>(GV) && !isa<GlobalAlias>(GV);
+    });
+    assert(!verifyModule(*GVs, &errs()) && "Invalid globals module");
+    dbgs() << "Emitting globals\n";
+    // for (auto &F : GVs->functions()) {
+    //     if (F.isDSOLocal() && F.isDeclaration()) {
+    //         F.setDSOLocal(false);
+    //         F.setLinkage(GlobalValue::WeakAnyLinkage);
+    //         auto BB = BasicBlock::Create(F.getContext(), "fake", &F);
+    //         auto Trap = Intrinsic::getDeclaration(GVs.get(), Intrinsic::trap);
+    //         CallInst::Create(Trap->getFunctionType(), Trap, "", BB);
+    //         new UnreachableInst(F.getContext(), BB);
+    //     }
+    // }
+    {
+        std::vector<NewArchiveMember> ObjFile;
+        std::vector<NewArchiveMember> AsmFile;
+        std::vector<std::string> output;
+        doCodegen(*GVs, TM, obj_Name, asm_Name, ObjFile, AsmFile, output);
+        {
+            std::lock_guard<std::mutex> Lock(OutputMutex);
+            ObjFiles.insert(ObjFiles.end(), std::make_move_iterator(ObjFile.begin()), std::make_move_iterator(ObjFile.end()));
+            AsmFiles.insert(AsmFiles.end(), std::make_move_iterator(AsmFile.begin()), std::make_move_iterator(AsmFile.end()));
+            outputs.insert(outputs.end(), std::make_move_iterator(output.begin()), std::make_move_iterator(output.end()));
+        }
+    }
+    dbgs() << "Done emitting globals\n";
+    for (size_t i = 0; i < Workers.size(); i++) {
+        Workers[i].join();
+    }
+    dbgs() << "Final archive size: ObjFiles = " << ObjFiles.size() << ", AsmFiles = " << AsmFiles.size() << "\n";
 }
 
 // takes the running content that has collected in the shadow module and dump it to disk
@@ -584,15 +774,6 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
     return (void*)data;
 }
 
-
-static void emit_result(std::vector<NewArchiveMember> &Archive, SmallVectorImpl<char> &OS,
-        StringRef Name, std::vector<std::string> &outputs)
-{
-    outputs.push_back({ OS.data(), OS.size() });
-    Archive.push_back(NewArchiveMember(MemoryBufferRef(outputs.back(), Name)));
-    OS.clear();
-}
-
 static object::Archive::Kind getDefaultForHost(Triple &triple)
 {
       if (triple.isOSDarwin())
@@ -605,23 +786,6 @@ static void reportWriterError(const ErrorInfoBase &E)
 {
     std::string err = E.message();
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
-}
-
-static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
-{
-    Function *target = M.getFunction(alias);
-    if (!target) {
-        target = Function::Create(FT, Function::ExternalLinkage, alias, M);
-    }
-    Function *interposer = Function::Create(FT, Function::WeakAnyLinkage, name, M);
-    appendToCompilerUsed(M, {interposer});
-
-    llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", interposer));
-    SmallVector<Value *, 4> CallArgs;
-    for (auto &arg : interposer->args())
-        CallArgs.push_back(&arg);
-    auto val = builder.CreateCall(target, CallArgs);
-    builder.CreateRet(val);
 }
 
 
@@ -745,39 +909,26 @@ void jl_dump_native_impl(void *native_code,
     // do the actual work
     auto add_output = [&] (Module &M, StringRef unopt_bc_Name, StringRef bc_Name, StringRef obj_Name, StringRef asm_Name) {
         preopt.run(M, empty.MAM);
-        if (bc_fname || obj_fname || asm_fname) {
-            assert(!verifyModule(M, &errs()));
-            // optimizer.run(M);
-            bulkOptimize(M, *TM, getOptLevel(jl_options.opt_level));
-            assert(!verifyModule(M, &errs()));
-        }
-
-        // We would like to emit an alias or an weakref alias to redirect these symbols
-        // but LLVM doesn't let us emit a GlobalAlias to a declaration...
-        // So for now we inject a definition of these functions that calls our runtime
-        // functions. We do so after optimization to avoid cloning these functions.
-        injectCRTAlias(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
-                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
-        injectCRTAlias(M, "__extendhfsf2", "julia__gnu_h2f_ieee",
-                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
-        injectCRTAlias(M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
-        injectCRTAlias(M, "__truncsfhf2", "julia__gnu_f2h_ieee",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
-        injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getDoubleTy(Context) }, false));
-
-        postopt.run(M, empty.MAM);
-        emitter.run(M);
 
         if (unopt_bc_fname)
             emit_result(unopt_bc_Archive, unopt_bc_Buffer, unopt_bc_Name, outputs);
+
+        if (!bc_fname && !obj_fname && !asm_fname)
+            return;
+
+        assert(!verifyModule(M, &errs()));
+        // optimizer.run(M);
+        bulkOptimize(M, *TM, getOptLevel(jl_options.opt_level));
+        assert(!verifyModule(M, &errs()));
+
+        postopt.run(M, empty.MAM);
         if (bc_fname)
             emit_result(bc_Archive, bc_Buffer, bc_Name, outputs);
-        if (obj_fname)
-            emit_result(obj_Archive, obj_Buffer, obj_Name, outputs);
-        if (asm_fname)
-            emit_result(asm_Archive, asm_Buffer, asm_Name, outputs);
+
+        if (!obj_fname && !asm_fname)
+            return;
+            
+        bulkEmit(M, *TM, obj_Archive, asm_Archive, obj_fname ? obj_Name : "", asm_fname ? asm_Name : "", outputs);
     };
 
     add_output(*dataM, "unopt.bc", "text.bc", "text.o", "text.s");
