@@ -6,6 +6,7 @@
 // target support
 #include <llvm/ADT/Triple.h>
 #include <llvm/ADT/Statistic.h>
+#include <llvm/ADT/SmallSet.h>
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/Analysis/TargetTransformInfo.h>
 #include <llvm/IR/DataLayout.h>
@@ -437,13 +438,13 @@ static void bulkOptimize(Module &M, TargetMachine &TM, OptimizationLevel O) {
         (void) Error;
     }
 
-    // Restore linkages
-    for (auto &GV : M.global_values()) {
-        auto it = LinkageMap.find(GV.getName());
-        if (it != LinkageMap.end()) {
-            GV.setLinkage(it->second);
-        }
-    }
+    // // Restore linkages
+    // for (auto &GV : M.global_values()) {
+    //     auto it = LinkageMap.find(GV.getName());
+    //     if (it != LinkageMap.end()) {
+    //         GV.setLinkage(it->second);
+    //     }
+    // }
 }
 
 static void emit_result(std::vector<NewArchiveMember> &Archive, SmallVectorImpl<char> &OS,
@@ -502,6 +503,7 @@ static void bulkEmit(Module &M, TargetMachine &TM, std::vector<NewArchiveMember>
             uint64_t end = jl_hrtime();
             dbgs() << "Deserialization took " << (end - start) / 1e9 << " seconds\n";
             auto TM = createTM();
+            dbgs() << "TM has relocation model " << TM->getRelocationModel() << "\n";
             {
                 std::unique_lock<std::mutex> Lock(OutputMutex);
                 Waiter.wait(Lock, [&](){ return Start; });
@@ -513,6 +515,12 @@ static void bulkEmit(Module &M, TargetMachine &TM, std::vector<NewArchiveMember>
             });
             dbgs() << "Starting emission\n";
             start = jl_hrtime();
+            if (auto used = M->getGlobalVariable("llvm.compiler.used")) {
+                used->eraseFromParent();
+            }
+            if (auto used = M->getGlobalVariable("llvm.used")) {
+                used->eraseFromParent();
+            }
             std::vector<NewArchiveMember> ObjFile;
             std::vector<NewArchiveMember> AsmFile;
             std::vector<std::string> output;
@@ -531,11 +539,26 @@ static void bulkEmit(Module &M, TargetMachine &TM, std::vector<NewArchiveMember>
         });
     }
     //Partition modules
+    SmallSet<GlobalValue*, 16> Special;
+    auto AddUsedFunctions = [&Special, &M](StringRef Name) {
+        auto GV = M.getGlobalVariable(Name, true);
+        if (!GV)
+            return;
+        auto Values = cast<ConstantArray>(GV->getInitializer());
+        for (auto &V : Values->operands()) {
+            Special.insert(cast<GlobalValue>(V->stripPointerCasts()));
+        }
+    };
+    AddUsedFunctions("llvm.compiler.used");
+    AddUsedFunctions("llvm.used");
+
     //Be a little bit good about giving equal work to each thread
     //later ones can be overweight because we'll be merging while
     //they're finishing optimization
     for (auto &F : M.functions()) {
         if (F.isDeclaration())
+            continue;
+        if (Special.count(&F))
             continue;
         Funcs.emplace_back(F.size(), F.getName());
     }
@@ -565,21 +588,19 @@ static void bulkEmit(Module &M, TargetMachine &TM, std::vector<NewArchiveMember>
     }
     Waiter.notify_all();
     ValueToValueMapTy VMap;
-    auto GVs = CloneModule(M, VMap, [](const GlobalValue *GV) {
-        return !isa<Function>(GV) && !isa<GlobalAlias>(GV);
+
+    auto GVs = CloneModule(M, VMap, [&Special](const GlobalValue *GV) {
+        if (isa<GlobalAlias>(GV))
+            return false;
+        if (isa<Function>(GV)) {
+            if (Special.count(GV))
+                return true;
+            return false;
+        }
+        return true;
     });
     assert(!verifyModule(*GVs, &errs()) && "Invalid globals module");
     dbgs() << "Emitting globals\n";
-    // for (auto &F : GVs->functions()) {
-    //     if (F.isDSOLocal() && F.isDeclaration()) {
-    //         F.setDSOLocal(false);
-    //         F.setLinkage(GlobalValue::WeakAnyLinkage);
-    //         auto BB = BasicBlock::Create(F.getContext(), "fake", &F);
-    //         auto Trap = Intrinsic::getDeclaration(GVs.get(), Intrinsic::trap);
-    //         CallInst::Create(Trap->getFunctionType(), Trap, "", BB);
-    //         new UnreachableInst(F.getContext(), BB);
-    //     }
-    // }
     {
         std::vector<NewArchiveMember> ObjFile;
         std::vector<NewArchiveMember> AsmFile;

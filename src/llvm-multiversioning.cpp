@@ -953,7 +953,7 @@ void CloneCtx::emit_metadata()
     }
 
     // Store back the information about exported functions.
-    auto fbase = emit_offset_table(fvars, "jl_sysimg_fvars");
+    // auto fbase = emit_offset_table(fvars, "jl_sysimg_fvars");
     auto gbase = emit_offset_table(gvars, "jl_sysimg_gvars");
 
     uint32_t ntargets = specs.size();
@@ -1044,7 +1044,7 @@ void CloneCtx::emit_metadata()
                         idxs.push_back(j);
                     }
                     if (i != 0) {
-                        offsets.push_back(get_ptrdiff32(grp->base_func(fvars[j]), fbase));
+                        // offsets.push_back(get_ptrdiff32(grp->base_func(fvars[j]), fbase));
                     }
                 }
             }
@@ -1058,12 +1058,12 @@ void CloneCtx::emit_metadata()
                         count++;
                         idxs.push_back(jl_sysimg_tag_mask | j);
                         auto f = map_get(*tgt->vmap, base_f, base_f);
-                        offsets.push_back(get_ptrdiff32(cast<Function>(f), fbase));
+                        // offsets.push_back(get_ptrdiff32(cast<Function>(f), fbase));
                     }
                     else if (auto f = map_get(*tgt->vmap, base_f)) {
                         count++;
                         idxs.push_back(j);
-                        offsets.push_back(get_ptrdiff32(cast<Function>(f), fbase));
+                        // offsets.push_back(get_ptrdiff32(cast<Function>(f), fbase));
                     }
                 }
             }
@@ -1074,10 +1074,10 @@ void CloneCtx::emit_metadata()
                                       GlobalVariable::ExternalLinkage,
                                       idxval, "jl_dispatch_fvars_idxs"));
         ArrayType *offsets_type = ArrayType::get(Type::getInt32Ty(M.getContext()), offsets.size());
-        add_comdat(new GlobalVariable(M, offsets_type, true,
-                                      GlobalVariable::ExternalLinkage,
-                                      ConstantArray::get(offsets_type, offsets),
-                                      "jl_dispatch_fvars_offsets"));
+        // add_comdat(new GlobalVariable(M, offsets_type, true,
+        //                               GlobalVariable::ExternalLinkage,
+        //                               ConstantArray::get(offsets_type, offsets),
+        //                               "jl_dispatch_fvars_offsets"));
     }
 }
 
