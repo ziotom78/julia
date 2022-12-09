@@ -1991,7 +1991,7 @@ function abstract_call_known(interp::AbstractInterpreter, @nospecialize(f),
     elseif f === UnionAll
         return CallMeta(abstract_call_unionall(argtypes), EFFECTS_UNKNOWN, NoCallInfo())
     elseif f === _typeof_captured_variable
-        la == 2 || return CallMeta(Union{}, false)
+        la == 2 || return CallMeta(Union{}, EFFECTS_THROWS, NoCallInfo())
         t = argtypes[2]
         if t isa Const
             tv = t.val
@@ -2004,7 +2004,7 @@ function abstract_call_known(interp::AbstractInterpreter, @nospecialize(f),
         else
             rt = DataType
         end
-        return CallMeta(rt, false)
+        return CallMeta(rt, EFFECTS_TOTAL, MethodResultPure())
     elseif f === Tuple && la == 2
         aty = argtypes[2]
         ty = isvarargtype(aty) ? unwrapva(aty) : widenconst(aty)
