@@ -201,13 +201,10 @@ end
         end
         for T2 in Base.BitInteger_types
             for op in (>>, <<, >>>)
-                if sizeof(T2)==sizeof(Int) || T <: Signed || (op==>>>) || T2 <: Unsigned
-                    @test Core.Compiler.is_total(Base.infer_effects(op, (T, T2)))
-                else
-                    @test Core.Compiler.is_foldable(Base.infer_effects(op, (T, T2)))
-                    # #47835, TODO implement interval arithmetic analysis
-                    @test_broken Core.Compiler.is_nothrow(Base.infer_effects(op, (T, T2)))
-                end
+                @test Core.Compiler.is_foldable(Base.infer_effects(op, (T, T2)))
+                # TODO fold out `0 ≤ x::UInt` to `Const(true)`
+                T2 === Int128 && (T === UInt64 || T === UInt128) && continue
+                @test Core.Compiler.is_removable_if_unused(Base.infer_effects(op, (T, T2)))
             end
         end
     end

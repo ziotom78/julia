@@ -24,6 +24,13 @@ function PartialStruct(@nospecialize(typ), fields::Vector{Any})
     return Core._PartialStruct(typ, fields)
 end
 
+import Core: Interval
+# struct Interval
+#     typ::DataType
+#     min
+#     max
+# end
+
 """
     cnd::Conditional
 
@@ -196,7 +203,7 @@ struct NotFound end
 
 const NOT_FOUND = NotFound()
 
-const CompilerTypes = Union{MaybeUndef, Const, Conditional, MustAlias, NotFound, PartialStruct}
+const CompilerTypes = Union{MaybeUndef, Const, Interval, Conditional, MustAlias, NotFound, PartialStruct}
 ==(x::CompilerTypes, y::CompilerTypes) = x === y
 ==(x::Type, y::CompilerTypes) = false
 ==(x::CompilerTypes, y::Type) = false
@@ -204,6 +211,78 @@ const CompilerTypes = Union{MaybeUndef, Const, Conditional, MustAlias, NotFound,
 #################
 # lattice logic #
 #################
+
+# Interval
+# ========
+
+const IEEEFloat = Union{Float16, Float32, Float64}
+
+@inline function intrinsicop(op::Symbol, @nospecialize(typ))
+    if typ <: SignedInt
+        op === :< && return slt_int
+        op === :<= && return sle_int
+        op === :≤ && return sle_int
+        op === :> && return !sle_int
+        op === :>= && return !slt_int
+        op === :≥ && return !slt_int
+        op === :min && return (x, y) -> (@nospecialize; ifelse(slt_int(x, y), x, y))
+        op === :max && return (x, y) -> (@nospecialize; ifelse(slt_int(x, y), y, x))
+    elseif typ <: UnsignedInt
+        op === :< && return ult_int
+        op === :<= && return ule_int
+        op === :≤ && return ule_int
+        op === :> && return !ule_int
+        op === :>= && return !ult_int
+        op === :≥ && return !ult_int
+        op === :min && return (x, y) -> (@nospecialize; ifelse(ult_int(x, y), x, y))
+        op === :max && return (x, y) -> (@nospecialize; ifelse(ult_int(x, y), y, x))
+    elseif typ <: IEEEFloat
+        op === :< && return lt_float
+        op === :<= && return le_float
+        op === :≤ && return le_float
+        op === :> && return !le_float
+        op === :>= && return !lt_float
+        op === :≥ && return !lt_float
+        op === :min && return (x, y) -> (@nospecialize; ifelse(lt_float(x, y), x, y))
+        op === :max && return (x, y) -> (@nospecialize; ifelse(lt_float(x, y), y, x))
+    else
+        throw("Interval expects basic numeric types")
+    end
+    throw("unsupported arithmetic operation")
+end
+
+function wideninterval(@nospecialize typ)
+    if isa(typ, Interval)
+        return typ.typ
+    end
+    return typ
+end
+
+function issubinterval(a::Interval, b::Interval)
+    issametype(a, b) || return false
+    ≤ = intrinsicop(:≤, a.typ)
+    return b.min ≤ a.min && a.max ≤ b.max
+end
+
+issametype(a::Interval, b::Interval) = a.typ === b.typ
+issametype(a::Interval, b::Const) = a.typ === typeof(b.val)
+issametype(a::Const, b::Interval) = issametype(b, a)
+
+isempty(a::Interval) = intrinsicop(:>, a.typ)(a.min, a.max)
+
+a::Interval ∩ b::Interval = begin
+    @assert issametype(a, b)
+    max = intrinsicop(:max, a.typ)
+    min = intrinsicop(:min, a.typ)
+    return Interval(a.typ, max(a.min, b.min), min(a.max, b.max))
+end
+a::Interval ∩ b::Const = begin
+    @assert issametype(a, b)
+    max = intrinsicop(:max, a.typ)
+    min = intrinsicop(:min, a.typ)
+    return Interval(a.typ, max(a.min, b.val), min(a.max, b.val))
+end
+a::Const ∩ b::Interval = b ∩ a
 
 # slot wrappers
 # =============
@@ -258,10 +337,10 @@ end
 
 # `Conditional` and `InterConditional` are valid in opposite contexts
 # (i.e. local inference and inter-procedural call), as such they will never be compared
-function issubconditional(lattice::AbstractLattice, a::C, b::C) where {C<:AnyConditional}
+function issubconditional(𝕃::AbstractLattice, a::C, b::C) where {C<:AnyConditional}
     if is_same_conditionals(a, b)
-        if ⊑(lattice, a.thentype, b.thentype)
-            if ⊑(lattice, a.elsetype, b.elsetype)
+        if ⊑(𝕃, a.thentype, b.thentype)
+            if ⊑(𝕃, a.elsetype, b.elsetype)
                 return true
             end
         end
@@ -422,6 +501,18 @@ function ⊑(𝕃::AnyMustAliasesLattice, @nospecialize(a), @nospecialize(b))
     return ⊑(widenlattice(𝕃), a, b)
 end
 
+function ⊑(𝕃::IntervalsLattice, @nospecialize(a), @nospecialize(b))
+    if isa(a, Interval)
+        if isa(b, Interval)
+            return issubinterval(a, b)
+        end
+        a = wideninterval(a)
+    elseif isa(b, Interval)
+        return ⊏(widenlattice(𝕃), a, wideninterval(b))
+    end
+    return ⊑(widenlattice(𝕃), a, b)
+end
+
 function ⊑(lattice::PartialsLattice, @nospecialize(a), @nospecialize(b))
     if isa(a, PartialStruct)
         if isa(b, PartialStruct)
@@ -523,6 +614,14 @@ function is_lattice_equal(lattice::OptimizerLattice, @nospecialize(a), @nospecia
     return is_lattice_equal(widenlattice(lattice), a, b)
 end
 
+function is_lattice_equal(𝕃::IntervalsLattice, @nospecialize(a), @nospecialize(b))
+    if isa(a, Interval) || isa(b, Interval)
+        # TODO: Unwrap these and recurse to is_lattice_equal
+        return ⊑(𝕃, a, b) && ⊑(𝕃, b, a)
+    end
+    return is_lattice_equal(widenlattice(𝕃), a, b)
+end
+
 function is_lattice_equal(lattice::AnyConditionalsLattice, @nospecialize(a), @nospecialize(b))
     ConditionalT = isa(lattice, ConditionalsLattice) ? Conditional : InterConditional
     if isa(a, ConditionalT) || isa(b, ConditionalT)
@@ -530,6 +629,15 @@ function is_lattice_equal(lattice::AnyConditionalsLattice, @nospecialize(a), @no
         return ⊑(lattice, a, b) && ⊑(lattice, b, a)
     end
     return is_lattice_equal(widenlattice(lattice), a, b)
+end
+
+function is_lattice_equal(𝕃::AnyMustAliasesLattice, @nospecialize(a), @nospecialize(b))
+    MustAliasT = isa(𝕃, MustAliasesLattice) ? MustAlias : InterMustAlias
+    if isa(a, MustAliasT) || isa(b, MustAliasT)
+        # TODO: Unwrap these and recurse to is_lattice_equal
+        return ⊑(𝕃, a, b) && ⊑(𝕃, b, a)
+    end
+    return is_lattice_equal(widenlattice(𝕃), a, b)
 end
 
 function is_lattice_equal(lattice::PartialsLattice, @nospecialize(a), @nospecialize(b))
@@ -628,6 +736,17 @@ function tmeet(lattice::ConstsLattice, @nospecialize(v), @nospecialize(t::Type))
     tmeet(widenlattice(lattice), widenconst(v), t)
 end
 
+function tmeet(𝕃::IntervalsLattice, @nospecialize(v), @nospecialize(t::Type))
+    if isa(v, Interval)
+        vt = wideninterval(v)
+        if vt === t
+            return v
+        end
+        v = vt
+    end
+    return tmeet(widenlattice(𝕃), v, t)
+end
+
 function tmeet(lattice::ConditionalsLattice, @nospecialize(v), @nospecialize(t::Type))
     if isa(v, Conditional)
         if !(Bool <: t)
@@ -681,6 +800,7 @@ function is_core_extended_info(@nospecialize t)
     isa(t, Type) && return true
     isa(t, Const) && return true
     isa(t, PartialStruct) && return true
+    isa(t, Interval) && return true
     isa(t, InterConditional) && return true
     # TODO isa(t, InterMustAlias) && return true
     isa(t, PartialOpaque) && return true
@@ -708,6 +828,7 @@ widenconst(c::Const) = (v = c.val; isa(v, Type) ? Type{v} : typeof(v))
 widenconst(m::MaybeUndef) = widenconst(m.typ)
 widenconst(::PartialTypeVar) = TypeVar
 widenconst(t::PartialStruct) = t.typ
+widenconst(t::Interval) = t.typ
 widenconst(t::PartialOpaque) = t.typ
 widenconst(t::Type) = t
 widenconst(::TypeVar) = error("unhandled TypeVar")

@@ -34,6 +34,17 @@ widenlattice(𝕃::PartialsLattice) = 𝕃.parent
 is_valid_lattice_norec(::PartialsLattice, @nospecialize(elem)) = isa(elem, PartialStruct) || isa(elem, PartialOpaque)
 
 """
+    struct IntervalsLattice{𝕃<:AbstractLattice}
+
+A lattice extending a base lattice `𝕃` and adjoining `Interval`.
+"""
+struct IntervalsLattice{𝕃<:AbstractLattice} <: AbstractLattice
+    parent::𝕃
+end
+widenlattice(𝕃::IntervalsLattice) = 𝕃.parent
+is_valid_lattice_norec(::IntervalsLattice, @nospecialize(elem)) = isa(elem, Interval)
+
+"""
     struct ConditionalsLattice{𝕃<:AbstractLattice} <: AbstractLattice
 
 A lattice extending a base lattice `𝕃` and adjoining `Conditional`.
@@ -80,7 +91,7 @@ is_valid_lattice_norec(::InterMustAliasesLattice, @nospecialize(elem)) = isa(ele
 const AnyConditionalsLattice{𝕃<:AbstractLattice} = Union{ConditionalsLattice{𝕃}, InterConditionalsLattice{𝕃}}
 const AnyMustAliasesLattice{𝕃<:AbstractLattice} = Union{MustAliasesLattice{𝕃}, InterMustAliasesLattice{𝕃}}
 
-const SimpleInferenceLattice = typeof(PartialsLattice(ConstsLattice()))
+const SimpleInferenceLattice = typeof(PartialsLattice(IntervalsLattice(ConstsLattice())))
 const BaseInferenceLattice = typeof(ConditionalsLattice(SimpleInferenceLattice.instance))
 const IPOResultLattice = typeof(InterConditionalsLattice(SimpleInferenceLattice.instance))
 
@@ -200,6 +211,10 @@ information that would not be available from the type itself.
 """
 has_nontrivial_extended_info(𝕃::AbstractLattice, @nospecialize t) =
     has_nontrivial_extended_info(widenlattice(𝕃), t)
+function has_nontrivial_extended_info(𝕃::IntervalsLattice, @nospecialize t)
+    isa(t, Interval) && return true
+    return has_nontrivial_extended_info(widenlattice(𝕃), t)
+end
 function has_nontrivial_extended_info(𝕃::PartialsLattice, @nospecialize t)
     isa(t, PartialStruct) && return true
     isa(t, PartialOpaque) && return true
@@ -223,6 +238,10 @@ that should be forwarded along with constant propagation.
 """
 is_const_prop_profitable_arg(𝕃::AbstractLattice, @nospecialize t) =
     is_const_prop_profitable_arg(widenlattice(𝕃), t)
+function is_const_prop_profitable_arg(𝕃::IntervalsLattice, @nospecialize t)
+    isa(t, Interval) && return true
+    return is_const_prop_profitable_arg(widenlattice(𝕃), t)
+end
 function is_const_prop_profitable_arg(𝕃::PartialsLattice, @nospecialize t)
     if isa(t, PartialStruct)
         return true # might be a bit aggressive, may want to enable some check like follows:
@@ -252,6 +271,10 @@ is_forwardable_argtype(𝕃::AbstractLattice, @nospecialize(x)) =
     is_forwardable_argtype(widenlattice(𝕃), x)
 function is_forwardable_argtype(𝕃::ConditionalsLattice, @nospecialize x)
     isa(x, Conditional) && return true
+    return is_forwardable_argtype(widenlattice(𝕃), x)
+end
+function is_forwardable_argtype(𝕃::IntervalsLattice, @nospecialize x)
+    isa(x, Interval) && return true
     return is_forwardable_argtype(widenlattice(𝕃), x)
 end
 function is_forwardable_argtype(𝕃::PartialsLattice, @nospecialize x)
@@ -293,6 +316,10 @@ has_conditional(::JLTypeLattice) = false
 has_mustalias(𝕃::AbstractLattice) = has_mustalias(widenlattice(𝕃))
 has_mustalias(::AnyMustAliasesLattice) = true
 has_mustalias(::JLTypeLattice) = false
+
+has_interval(𝕃::AbstractLattice) = has_interval(widenlattice(𝕃))
+has_interval(::IntervalsLattice) = true
+has_interval(::JLTypeLattice) = false
 
 # Curried versions
 ⊑(lattice::AbstractLattice) = (@nospecialize(a), @nospecialize(b)) -> ⊑(lattice, a, b)

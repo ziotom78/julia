@@ -4701,3 +4701,21 @@ let # jl_widen_core_extended_info
               widened
     end
 end
+
+# interval arithmetics analysis
+@test Base.return_types((Int32,)) do x
+    x < typemax(Int) ? 0 : nothing
+end |> only === Int
+@test Base.return_types((Int32,)) do x
+    x ≤ typemax(Int) ? 0 : nothing
+end |> only === Int
+@test Base.return_types((Int32,)) do x
+    x > typemax(Int) ? 0 : nothing
+end |> only === Nothing
+@test Base.return_types((Int32,)) do x
+    x ≥ typemax(Int) ? 0 : nothing
+end |> only === Nothing
+@test Base.return_types((Int32,)) do x
+    x == typemax(Int) ? 0 : nothing
+end |> only === Nothing
+@test Core.Compiler.is_nothrow(Base.infer_effects(>>, (UInt32,Int32)))
