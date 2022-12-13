@@ -61,6 +61,8 @@ static bool checkCombine(Value *maybeMul)
 
 static bool combineMulAdd(Function &F)
 {
+    if (F.hasOptNone())
+        return false;
     bool modified = false;
     for (auto &BB: F) {
         for (auto it = BB.begin(); it != BB.end();) {
