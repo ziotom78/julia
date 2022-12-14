@@ -598,6 +598,11 @@ function project_file_name_uuid(project_file::String, name::String)::PkgId
     return PkgId(uuid, name)
 end
 
+function project_file_parent_project(project_file::String)
+    d = parsed_toml(project_file)
+    return get(d, "parent-project", nothing)
+end
+
 function project_file_path(project_file::String)
     d = parsed_toml(project_file)
     joinpath(dirname(project_file), get(d, "path", "")::String)
@@ -613,20 +618,32 @@ function project_file_manifest_path(project_file::String)::Union{Nothing,String}
     end
     dir = abspath(dirname(project_file))
     d = parsed_toml(project_file)
-    explicit_manifest = get(d, "manifest", nothing)::Union{String, Nothing}
     manifest_path = nothing
-    if explicit_manifest !== nothing
-        manifest_file = normpath(joinpath(dir, explicit_manifest))
-        if isfile_casesensitive(manifest_file)
-            manifest_path = manifest_file
+
+    parent = project_file_parent_project(project_file)
+    if parent !== nothing
+        new_env = joinpath(dirname(project_file), parent)
+        parent_project = env_project_file(new_env)
+        if parent_project isa String
+            manifest_path = project_file_manifest_path(parent_project)
+        else
+            error("could not find a project file in \"$(new_env)\"")
         end
-    end
-    if manifest_path === nothing
-        for mfst in manifest_names
-            manifest_file = joinpath(dir, mfst)
+    else
+        explicit_manifest = get(d, "manifest", nothing)::Union{String, Nothing}
+        if explicit_manifest !== nothing
+            manifest_file = normpath(joinpath(dir, explicit_manifest))
             if isfile_casesensitive(manifest_file)
                 manifest_path = manifest_file
-                break
+            end
+        end
+        if manifest_path === nothing
+            for mfst in manifest_names
+                manifest_file = joinpath(dir, mfst)
+                if isfile_casesensitive(manifest_file)
+                    manifest_path = manifest_file
+                    break
+                end
             end
         end
     end
@@ -714,11 +731,13 @@ function get_deps(raw_manifest::Dict)
     end
 end
 
+
 # find `where` stanza and return the PkgId for `name`
 # return `nothing` if it did not find `where` (indicating caller should continue searching)
 function explicit_manifest_deps_get(project_file::String, where::PkgId, name::String)::Union{Nothing,PkgId}
     manifest_file = project_file_manifest_path(project_file)
     manifest_file === nothing && return nothing # manifest not found--keep searching LOAD_PATH
+
     d = get_deps(parsed_toml(manifest_file))
     found_where = false
     found_name = false
