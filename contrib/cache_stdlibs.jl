@@ -2,6 +2,16 @@
 # Run with the `--exclude-sysimage` option to filter out all packages included in the system image
 stdlibs = [
     # No dependencies
+    :ArgTools,
+    :Artifacts,
+    :CRC32c,
+    :FileWatching,
+    :Libdl,
+    :Logging,
+    :Mmap,
+    :NetworkOptions,
+    :SHA,
+    :Serialization,
 
     # 1-depth packages
     :GMP_jll,
@@ -14,17 +24,42 @@ stdlibs = [
     :Zlib_jll,
     :dSFMT_jll,
     :libLLVM_jll,
+    :LinearAlgebra,
+    :Printf,
+    :Random,
+    :Tar,
+
 
     # 2-depth packages
     :LibSSH2_jll,
     :MPFR_jll,
+    :Dates,
+    :Distributed,
+    :Future,
+    :LibGit2,
+    :Profile,
+    :SparseArrays,
+    :UUIDs,
 
     # 3-depth packages
     :LibGit2_jll,
+    :SharedArrays,
+    :TOML,
+    :Test,
+
+    # 4-depth packages
+    :LibCURL,
+
+    # 5-depth packages
+    :Downloads,
+
+    # 6-depth packages
+    :Pkg,
 
     # 7-depth packages
     :LLD_jll,
     :SuiteSparse_jll,
+    :LazyArtifacts,
 
     # 9-depth packages
     :Statistics,
