@@ -38,7 +38,7 @@ let
     tot_time_userimg = @elapsed (isfile("userimg.jl") && Base.include(Main, "userimg.jl"))
 
     tot_time_base = (Base.end_base_include - Base.start_base_include) * 10.0^(-9)
-    tot_time = tot_time_base + tot_time_stdlib + tot_time_userimg
+    tot_time = tot_time_base + tot_time_userimg
 
     println("Sysimage built. Summary:")
     print("Base ──────── "); Base.time_print(tot_time_base    * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_base    / tot_time) * 100); println("%")
