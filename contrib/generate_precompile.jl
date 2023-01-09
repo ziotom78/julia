@@ -119,8 +119,7 @@ precompile_script = """
 
 julia_exepath() = joinpath(Sys.BINDIR, Base.julia_exename())
 
-have_repl =  haskey(Base.loaded_modules,
-                    Base.PkgId(Base.UUID("3fa0cd96-eef1-5676-8a61-b3b8758bbffb"), "REPL"))
+have_repl = false
 if have_repl
     hardcoded_precompile_statements *= """
     precompile(Tuple{typeof(getproperty), REPL.REPLBackend, Symbol})

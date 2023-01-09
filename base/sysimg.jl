@@ -27,49 +27,6 @@ let
     task.rngState2 = 0x503e1d32781c2608
     task.rngState3 = 0x3a77f7189200c20b
 
-    # Stdlibs sorted in dependency, then alphabetical, order by contrib/print_sorted_stdlibs.jl
-    # Run with the `--exclude-jlls` option to filter out all JLL packages
-    stdlibs = [
-        # No dependencies
-        :Base64,
-        :Sockets,
-        :Unicode,
-
-        # 1-depth packages
-        :Markdown,
-
-        # 2-depth packages
-        :InteractiveUtils,
-
-        # 3-depth packages
-        :REPL,
-    ]
-    # PackageCompiler can filter out stdlibs so it can be empty
-    maxlen = maximum(textwidth.(string.(stdlibs)); init=0)
-
-    tot_time_stdlib = 0.0
-    # use a temp module to avoid leaving the type of this closure in Main
-    m = Module()
-    GC.@preserve m begin
-        print_time = @eval m (mod, t) -> (print(rpad(string(mod) * "  ", $maxlen + 3, "─"));
-                                          Base.time_print(t * 10^9); println())
-        print_time(Base, (Base.end_base_include - Base.start_base_include) * 10^(-9))
-
-        Base._track_dependencies[] = true
-        tot_time_stdlib = @elapsed for stdlib in stdlibs
-            tt = @elapsed Base.require(Base, stdlib)
-            print_time(stdlib, tt)
-        end
-        for dep in Base._require_dependencies
-            dep[3] == 0.0 && continue
-            push!(Base._included_files, dep[1:2])
-        end
-        empty!(Base._require_dependencies)
-        Base._track_dependencies[] = false
-
-        print_time("Stdlibs total", tot_time_stdlib)
-    end
-
     # Clear global state
     empty!(Core.ARGS)
     empty!(Base.ARGS)
@@ -85,7 +42,6 @@ let
 
     println("Sysimage built. Summary:")
     print("Base ──────── "); Base.time_print(tot_time_base    * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_base    / tot_time) * 100); println("%")
-    print("Stdlibs ───── "); Base.time_print(tot_time_stdlib  * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_stdlib  / tot_time) * 100); println("%")
     if isfile("userimg.jl")
     print("Userimg ───── "); Base.time_print(tot_time_userimg * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_userimg / tot_time) * 100); println("%")
     end
