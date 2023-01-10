@@ -4709,3 +4709,8 @@ end
 @Base.constprop :aggressive type_level_recurse2(x...) = type_level_recurse1(x...)
 type_level_recurse_entry() = Val{type_level_recurse1(1)}()
 @test Base.return_types(type_level_recurse_entry, ()) |> only == Val{1}
+
+# `isconstType` for `Union`-types
+@test Base.return_types((Type{Union{Int,UInt}},)) do T
+    Base.allocatedinline(T) ? nothing : missing
+end |> only === Nothing

@@ -168,8 +168,7 @@ julia> Base.isbitsunion(Union{Float64, String})
 false
 ```
 """
-isbitsunion(u::Union) = allocatedinline(u)
-isbitsunion(x) = false
+isbitsunion(@nospecialize x) = isa(x, Union) && allocatedinline(x)
 
 function _unsetindex!(A::Array{T}, i::Int) where {T}
     @inline
