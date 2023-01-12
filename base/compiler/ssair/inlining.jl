@@ -815,8 +815,9 @@ compileable_specialization(result::InferenceResult, args...; kwargs...) = (@nosp
 
 struct CachedResult
     src::Any
+    rt::Any
     effects::Effects
-    CachedResult(@nospecialize(src), effects::Effects) = new(src, effects)
+    CachedResult(@nospecialize(src), @nospecialize(rt), effects::Effects) = new(src, rt, effects)
 end
 @inline function get_cached_result(state::InliningState, mi::MethodInstance)
     code = get(code_cache(state), mi, nothing)
@@ -827,10 +828,11 @@ end
         else
             src = @atomic :monotonic code.inferred
         end
+        rt = code.rettype
         effects = decode_effects(code.ipo_purity_bits)
-        return CachedResult(src, effects)
+        return CachedResult(src, rt, effects)
     else # fallback pass for external AbstractInterpreter cache
-        return CachedResult(code, Effects())
+        return CachedResult(code, Any, Effects())
     end
 end
 
@@ -848,6 +850,7 @@ function resolve_todo(mi::MethodInstance, result::Union{MethodMatch,InferenceRes
             add_inlining_backedge!(et, mi)
             return ConstantCase(quoted(src.val))
         end
+        rt = result.result
         effects = result.ipo_effects
     else
         cached_result = get_cached_result(state, mi)
@@ -855,7 +858,7 @@ function resolve_todo(mi::MethodInstance, result::Union{MethodMatch,InferenceRes
             add_inlining_backedge!(et, mi)
             return cached_result
         end
-        (; src, effects) = cached_result
+        (; src, effects, rt) = cached_result
     end
 
     # the duplicated check might have been done already within `analyze_method!`, but still
@@ -865,7 +868,8 @@ function resolve_todo(mi::MethodInstance, result::Union{MethodMatch,InferenceRes
             compilesig_invokes=state.params.compilesig_invokes)
     end
 
-    src = inlining_policy(state.interp, src, info, flag, mi, argtypes)
+    iinfo = InlineeInfo(rt, mi, argtypes, info, flag)
+    src = inlining_policy(state.interp, src, iinfo)
 
     if isa(src, ConstAPI)
         # duplicates the check above in case inlining_policy has a better idea.
@@ -897,9 +901,10 @@ function resolve_todo(mi::MethodInstance, argtypes::Vector{Any},
         add_inlining_backedge!(et, mi)
         return cached_result
     end
-    (; src, effects) = cached_result
+    (; src, rt, effects) = cached_result
 
-    src = inlining_policy(state.interp, src, info, flag, mi, argtypes)
+    iinfo = InlineeInfo(rt, mi, argtypes, info, flag)
+    src = inlining_policy(state.interp, src, iinfo)
 
     src === nothing && return nothing
 
@@ -1295,9 +1300,9 @@ function handle_any_const_result!(cases::Vector{InliningCase},
     allow_abstract::Bool, allow_typevars::Bool)
     if isa(result, ConcreteResult)
         return handle_concrete_result!(cases, result, info, state)
-    end
-    if isa(result, SemiConcreteResult)
-        result = inlining_policy(state.interp, result, info, flag, result.mi, argtypes)
+    elseif isa(result, SemiConcreteResult)
+        iinfo = InlineeInfo(result.rt, result.mi, argtypes, info, flag)
+        result = inlining_policy(state.interp, result, iinfo)
         if isa(result, SemiConcreteResult)
             return handle_semi_concrete_result!(cases, result, info, flag, state; allow_abstract)
         end

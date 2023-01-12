@@ -1086,7 +1086,8 @@ function try_inline_finalizer!(ir::IRCode, argexprs::Vector{Any}, idx::Int,
         src = code
     end
 
-    src = inlining_policy(inlining.interp, src, info, IR_FLAG_NULL, mi, Any[])
+    iinfo = InlineeInfo(Any, mi, Any[], info, IR_FLAG_NULL)
+    src = inlining_policy(inlining.interp, src, iinfo)
     src === nothing && return false
     src = retrieve_ir_for_inlining(mi, src)
 

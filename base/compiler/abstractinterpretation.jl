@@ -1023,7 +1023,7 @@ function abstract_call_method_with_const_args(interp::AbstractInterpreter,
                 @assert !(rt isa Conditional || rt isa MustAlias) "invalid lattice element returned from IR interpretation"
                 if !isa(rt, Type) || typeintersect(rt, Bool) === Union{}
                     new_effects = Effects(result.effects; nothrow=nothrow)
-                    return ConstCallResults(rt, SemiConcreteResult(mi, ir, new_effects), new_effects, mi)
+                    return ConstCallResults(rt, SemiConcreteResult(mi, ir, rt, new_effects), new_effects, mi)
                 end
             end
         end
@@ -1284,11 +1284,15 @@ function const_prop_methodinstance_heuristic(interp::AbstractInterpreter,
         if isdefined(code, :inferred)
             if isa(code, CodeInstance)
                 inferred = @atomic :monotonic code.inferred
+                rt = code.rettype
             else
+                # fallback pass for external AbstractInterpreter cache
                 inferred = code.inferred
+                rt = Any
             end
             # TODO propagate a specific `CallInfo` that conveys information about this call
-            if inlining_policy(interp, inferred, NoCallInfo(), IR_FLAG_NULL, mi, arginfo.argtypes) !== nothing
+            iinfo = InlineeInfo(rt, mi, arginfo.argtypes, NoCallInfo(), IR_FLAG_NULL)
+            if inlining_policy(interp, inferred, iinfo) !== nothing
                 return true
             end
         end
