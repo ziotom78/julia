@@ -855,6 +855,7 @@ export
     readline,
     readlines,
     readuntil,
+    readuntil!,
     redirect_stdio,
     redirect_stderr,
     redirect_stdin,
