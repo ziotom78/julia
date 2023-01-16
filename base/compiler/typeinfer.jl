@@ -295,7 +295,7 @@ function _typeinf(interp::AbstractInterpreter, frame::InferenceState)
     return true
 end
 
-function CodeInstance(
+function CodeInstance(interp::AbstractInterpreter,
     result::InferenceResult, @nospecialize(inferred_result), valid_worlds::WorldRange)
     local const_flags::Int32
     result_type = result.result
@@ -332,12 +332,23 @@ function CodeInstance(
     relocatability = isa(inferred_result, Vector{UInt8}) ? inferred_result[end] :
                      inferred_result === nothing ? UInt8(1) : UInt8(0)
     # relocatability = isa(inferred_result, Vector{UInt8}) ? inferred_result[end] : UInt8(0)
+    precompile = false
+    if isa(interp, NativeInterpreter)
+        if inferred_result !== nothing
+            src = inferred_result::MaybeCompressed
+            iinfo = InlineeMetaInfo(result_type, result.linfo)
+            if !is_inlineable(interp, src, iinfo)
+                precompile = true
+            end
+        end
+    end
+    ipo_effects = effects = encode_effects(result.ipo_effects)
     return CodeInstance(result.linfo,
         widenconst(result_type), rettype_const, inferred_result,
         const_flags, first(valid_worlds), last(valid_worlds),
         # TODO: Actually do something with non-IPO effects
-	    encode_effects(result.ipo_effects), encode_effects(result.ipo_effects), result.argescapes,
-        relocatability)
+        ipo_effects, effects, result.argescapes,
+        relocatability, precompile)
 end
 
 function maybe_compress_codeinfo(interp::AbstractInterpreter, mi::MethodInstance, ci::CodeInfo)
@@ -402,7 +413,7 @@ function cache_result!(interp::AbstractInterpreter, result::InferenceResult)
     # TODO: also don't store inferred code if we've previously decided to interpret this function
     if !already_inferred
         inferred_result = transform_result_for_cache(interp, linfo, valid_worlds, result)
-        code_cache(interp)[linfo] = ci = CodeInstance(result, inferred_result, valid_worlds)
+        code_cache(interp)[linfo] = ci = CodeInstance(interp, result, inferred_result, valid_worlds)
         if track_newly_inferred[]
             m = linfo.def
             if isa(m, Method) && m.module != Core

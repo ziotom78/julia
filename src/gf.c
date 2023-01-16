@@ -221,7 +221,7 @@ JL_DLLEXPORT jl_code_instance_t* jl_new_codeinst(
         jl_value_t *inferred_const, jl_value_t *inferred,
         int32_t const_flags, size_t min_world, size_t max_world,
         uint32_t ipo_effects, uint32_t effects, jl_value_t *argescapes,
-        uint8_t relocatability);
+        uint8_t relocatability, uint8_t precompile);
 
 jl_datatype_t *jl_mk_builtin_func(jl_datatype_t *dt, const char *name, jl_fptr_args_t fptr) JL_GC_DISABLED
 {
@@ -256,7 +256,7 @@ jl_datatype_t *jl_mk_builtin_func(jl_datatype_t *dt, const char *name, jl_fptr_a
 
     jl_code_instance_t *codeinst = jl_new_codeinst(mi,
         (jl_value_t*)jl_any_type, jl_nothing, jl_nothing,
-        0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
+        0, 1, ~(size_t)0, 0, 0, jl_nothing, 0, 0);
     jl_mi_cache_insert(mi, codeinst);
     jl_atomic_store_relaxed(&codeinst->specptr.fptr1, fptr);
     jl_atomic_store_relaxed(&codeinst->invoke, jl_fptr_args);
@@ -388,7 +388,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_get_method_inferred(
     }
     codeinst = jl_new_codeinst(
         mi, rettype, NULL, NULL,
-        0, min_world, max_world, 0, 0, jl_nothing, 0);
+        0, min_world, max_world, 0, 0, jl_nothing, 0, 0);
     jl_mi_cache_insert(mi, codeinst);
     return codeinst;
 }
@@ -398,7 +398,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
         jl_value_t *inferred_const, jl_value_t *inferred,
         int32_t const_flags, size_t min_world, size_t max_world,
         uint32_t ipo_effects, uint32_t effects, jl_value_t *argescapes,
-        uint8_t relocatability
+        uint8_t relocatability, uint8_t precompile
         /*, jl_array_t *edges, int absolute_max*/)
 {
     jl_task_t *ct = jl_current_task;
@@ -421,7 +421,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
         jl_atomic_store_relaxed(&codeinst->invoke, jl_fptr_const_return);
     }
     codeinst->isspecsig = 0;
-    jl_atomic_store_relaxed(&codeinst->precompile, 0);
+    jl_atomic_store_relaxed(&codeinst->precompile, precompile ? 1 : 0);
     jl_atomic_store_relaxed(&codeinst->next, NULL);
     codeinst->ipo_purity_bits = ipo_effects;
     jl_atomic_store_relaxed(&codeinst->purity_bits, effects);
@@ -2251,7 +2251,7 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
                 if (unspec && jl_atomic_load_acquire(&unspec->invoke)) {
                     jl_code_instance_t *codeinst = jl_new_codeinst(mi,
                         (jl_value_t*)jl_any_type, NULL, NULL,
-                        0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
+                        0, 1, ~(size_t)0, 0, 0, jl_nothing, 0, 0);
                     codeinst->isspecsig = 0;
                     codeinst->specptr = unspec->specptr;
                     codeinst->rettype_const = unspec->rettype_const;
@@ -2271,7 +2271,7 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
         if (!jl_code_requires_compiler(src, 0)) {
             jl_code_instance_t *codeinst = jl_new_codeinst(mi,
                 (jl_value_t*)jl_any_type, NULL, NULL,
-                0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
+                0, 1, ~(size_t)0, 0, 0, jl_nothing, 0, 0);
             jl_atomic_store_relaxed(&codeinst->invoke, jl_fptr_interpret_call);
             jl_mi_cache_insert(mi, codeinst);
             record_precompile_statement(mi);
@@ -2306,7 +2306,7 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
             return ucache;
         }
         codeinst = jl_new_codeinst(mi, (jl_value_t*)jl_any_type, NULL, NULL,
-            0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
+            0, 1, ~(size_t)0, 0, 0, jl_nothing, 0, 0);
         codeinst->isspecsig = 0;
         codeinst->specptr = ucache->specptr;
         codeinst->rettype_const = ucache->rettype_const;
