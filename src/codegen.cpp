@@ -3,12 +3,6 @@
 #undef DEBUG
 #include "llvm-version.h"
 #include "platform.h"
-#if defined(_CPU_X86_)
-#define JL_NEED_FLOATTEMP_VAR 1
-#endif
-#if defined(_OS_WINDOWS_) || defined(_OS_FREEBSD_) || defined(_COMPILER_MSAN_ENABLED_)
-#define JL_DISABLE_FPO
-#endif
 
 #ifndef __STDC_LIMIT_MACROS
 #define __STDC_LIMIT_MACROS
@@ -591,7 +585,6 @@ static const auto jlRTLD_DEFAULT_var = new JuliaVariable{
     true,
     [](LLVMContext &C) { return static_cast<llvm::Type*>(getInt8PtrTy(C)); },
 };
-#ifdef _OS_WINDOWS_
 static const auto jlexe_var = new JuliaVariable{
     XSTR(jl_exe_handle),
     true,
@@ -607,7 +600,6 @@ static const auto jldlli_var = new JuliaVariable{
     true,
     [](LLVMContext &C) { return static_cast<llvm::Type*>(getInt8PtrTy(C)); },
 };
-#endif //_OS_WINDOWS_
 
 static const auto jlstack_chk_guard_var = new JuliaVariable{
     XSTR(__stack_chk_guard),
@@ -2300,11 +2292,24 @@ std::unique_ptr<Module> jl_create_llvm_module(StringRef name, LLVMContext &conte
     m->setDataLayout(DL);
     m->setTargetTriple(triple.str());
 
-#if defined(_OS_WINDOWS_) && !defined(_CPU_X86_64_) && JL_LLVM_VERSION >= 130000
+#ifdef _COMPILER_ASAN_ENABLED_
+    m->addModuleFlag(Module::Warning, "julia.asan", 1);
+#endif
+
+#ifdef _COMPILER_MSAN_ENABLED_
+    m->addModuleFlag(Module::Warning, "julia.msan", 1);
+#endif
+
+#ifdef _COMPILER_TSAN_ENABLED_
+    m->addModuleFlag(Module::Warning, "julia.tsan", 1);
+#endif
+#if JL_LLVM_VERSION >= 130000
     // tell Win32 to assume the stack is always 16-byte aligned,
     // and to ensure that it is 16-byte aligned for out-going calls,
     // to ensure compatibility with GCC codes
-    m->setOverrideStackAlignment(16);
+    if (triple.isOSWindows() && triple.getArch() == Triple::x86) {
+        m->setOverrideStackAlignment(16);
+    }
 #endif
 #if defined(JL_DEBUG_BUILD) && JL_LLVM_VERSION >= 130000
     m->setStackProtectorGuard("global");
@@ -2312,7 +2317,7 @@ std::unique_ptr<Module> jl_create_llvm_module(StringRef name, LLVMContext &conte
     return m;
 }
 
-static void jl_init_function(Function *F)
+static void jl_init_function(Function *F, const Triple &triple)
 {
     // set any attributes that *must* be set on all functions
 #if JL_LLVM_VERSION >= 140000
@@ -2320,33 +2325,33 @@ static void jl_init_function(Function *F)
 #else
     AttrBuilder attr;
 #endif
-#if defined(_OS_WINDOWS_) && !defined(_CPU_X86_64_)
     // tell Win32 to realign the stack to the next 16-byte boundary
     // upon entry to any function. This achieves compatibility
     // with both MinGW-GCC (which assumes an 16-byte-aligned stack) and
     // i686 Windows (which uses a 4-byte-aligned stack)
-    attr.addStackAlignmentAttr(16);
-#endif
-#if defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)
-    attr.addAttribute(Attribute::UWTable); // force NeedsWinEH
-#endif
-#ifdef JL_DISABLE_FPO
-    attr.addAttribute("frame-pointer", "all");
-#endif
-#if !defined(_COMPILER_ASAN_ENABLED_) && !defined(_OS_WINDOWS_)
-    // ASAN won't like us accessing undefined memory causing spurious issues,
-    // and Windows has platform-specific handling which causes it to mishandle
-    // this annotation. Other platforms should just ignore this if they don't
-    // implement it.
-    attr.addAttribute("probe-stack", "inline-asm");
-    //attr.addAttribute("stack-probe-size", "4096"); // can use this to change the default
-#endif
-#if defined(_COMPILER_ASAN_ENABLED_)
-    attr.addAttribute(Attribute::SanitizeAddress);
-#endif
-#if defined(_COMPILER_MSAN_ENABLED_)
-    attr.addAttribute(Attribute::SanitizeMemory);
-#endif
+    if (triple.isOSWindows() && triple.getArch() == Triple::x86)
+        attr.addStackAlignmentAttr(16);
+    if (triple.isOSWindows() && triple.getArch() == Triple::x86_64)
+        attr.addAttribute(Attribute::UWTable); // force NeedsWinEH
+    auto &M = *F->getParent();
+    // disable frame pointer optimization for these platforms
+    if (triple.isOSWindows() || triple.isOSFreeBSD() || M.getModuleFlag("julia.msan")) {
+        attr.addAttribute("frame-pointer", "all");
+    }
+    if (!triple.isOSWindows() && !M.getModuleFlag("julia.asan")) {
+        // ASAN won't like us accessing undefined memory causing spurious issues,
+        // and Windows has platform-specific handling which causes it to mishandle
+        // this annotation. Other platforms should just ignore this if they don't
+        // implement it.
+        attr.addAttribute("probe-stack", "inline-asm");
+        //attr.addAttribute("stack-probe-size", "4096"); // can use this to change the default
+    }
+    if (M.getModuleFlag("julia.asan")) {
+        attr.addAttribute(Attribute::SanitizeAddress);
+    }
+    if (M.getModuleFlag("julia.msan")) {
+        attr.addAttribute(Attribute::SanitizeMemory);
+    }
 #if JL_LLVM_VERSION >= 140000
     F->addFnAttrs(attr);
 #else
@@ -5141,7 +5146,7 @@ static std::pair<Function*, Function*> get_oc_function(jl_codectx_t &ctx, jl_met
         F = Function::Create(get_func_sig(ctx.builder.getContext()),
                              Function::ExternalLinkage,
                              fname, jl_Module);
-        jl_init_function(F);
+        jl_init_function(F, ctx.emission_context.TargetTriple);
         F->setAttributes(AttributeList::get(ctx.builder.getContext(), {get_func_attrs(ctx.builder.getContext()), F->getAttributes()}));
     }
     Function *specF = NULL;
@@ -5613,7 +5618,7 @@ static Function *emit_tojlinvoke(jl_code_instance_t *codeinst, Module *M, jl_cod
     Function *f = Function::Create(ctx.types().T_jlfunc,
             GlobalVariable::InternalLinkage,
             name, M);
-    jl_init_function(f);
+    jl_init_function(f, params.TargetTriple);
     //f->setAlwaysInline();
     ctx.f = f; // for jl_Module
     BasicBlock *b0 = BasicBlock::Create(ctx.builder.getContext(), "top", f);
@@ -5888,7 +5893,7 @@ static Function* gen_cfun_wrapper(
     Function *cw = Function::Create(functype,
             GlobalVariable::ExternalLinkage,
             funcName, M);
-    jl_init_function(cw);
+    jl_init_function(cw, params.TargetTriple);
     cw->setAttributes(AttributeList::get(M->getContext(), {attributes, cw->getAttributes()}));
 
     jl_codectx_t ctx(M->getContext(), params);
@@ -6097,7 +6102,7 @@ static Function* gen_cfun_wrapper(
             if (!theFptr) {
                 theFptr = Function::Create(ctx.types().T_jlfunc, GlobalVariable::ExternalLinkage,
                                            fname, jl_Module);
-                jl_init_function(theFptr);
+                jl_init_function(theFptr, ctx.emission_context.TargetTriple);
                 addRetAttr(theFptr, Attribute::NonNull);
             }
             else {
@@ -6200,7 +6205,7 @@ static Function* gen_cfun_wrapper(
             funcName += "_gfthunk";
             Function *gf_thunk = Function::Create(returninfo.decl->getFunctionType(),
                     GlobalVariable::InternalLinkage, funcName, M);
-            jl_init_function(gf_thunk);
+            jl_init_function(gf_thunk, ctx.emission_context.TargetTriple);
             gf_thunk->setAttributes(AttributeList::get(M->getContext(), {returninfo.decl->getAttributes(), gf_thunk->getAttributes()}));
             // build a  specsig -> jl_apply_generic converter thunk
             // this builds a method that calls jl_apply_generic (as a closure over a singleton function pointer),
@@ -6294,7 +6299,7 @@ static Function* gen_cfun_wrapper(
                 FunctionType::get(getInt8PtrTy(ctx.builder.getContext()), { getInt8PtrTy(ctx.builder.getContext()), ctx.types().T_ppjlvalue }, false),
                 GlobalVariable::ExternalLinkage,
                 funcName, M);
-        jl_init_function(cw_make);
+        jl_init_function(cw_make, ctx.emission_context.TargetTriple);
         BasicBlock *b0 = BasicBlock::Create(ctx.builder.getContext(), "top", cw_make);
         IRBuilder<> cwbuilder(b0);
         Function::arg_iterator AI = cw_make->arg_begin();
@@ -6406,12 +6411,13 @@ static jl_cgval_t emit_cfunction(jl_codectx_t &ctx, jl_value_t *output_type, con
     }
 
     bool nest = (!fexpr_rt.constant || unionall_env);
-#if defined(_CPU_AARCH64_) || defined(_CPU_ARM_) || defined(_CPU_PPC64_)
-    if (nest) {
-        emit_error(ctx, "cfunction: closures are not supported on this platform");
-        return jl_cgval_t();
+    const auto &triple = ctx.emission_context.TargetTriple;
+    if (triple.isAArch64() || triple.isARM() || triple.isPPC64()) {
+        if (nest) {
+            emit_error(ctx, "cfunction: closures are not supported on this platform");
+            return jl_cgval_t();
+        }
     }
-#endif
     size_t world = jl_atomic_load_acquire(&jl_world_counter);
     size_t min_valid = 0;
     size_t max_valid = ~(size_t)0;
@@ -6536,7 +6542,7 @@ static Function *gen_invoke_wrapper(jl_method_instance_t *lam, jl_value_t *jlret
 {
     ++GeneratedInvokeWrappers;
     Function *w = Function::Create(get_func_sig(M->getContext()), GlobalVariable::ExternalLinkage, funcName, M);
-    jl_init_function(w);
+    jl_init_function(w, params.TargetTriple);
     w->setAttributes(AttributeList::get(M->getContext(), {get_func_attrs(M->getContext()), w->getAttributes()}));
     Function::arg_iterator AI = w->arg_begin();
     Value *funcArg = &*AI++;
@@ -6802,7 +6808,7 @@ static jl_returninfo_t get_specsig_function(jl_codectx_t &ctx, Module *M, String
     Function *f = M ? cast_or_null<Function>(M->getNamedValue(name)) : NULL;
     if (f == NULL) {
         f = Function::Create(ftype, GlobalVariable::ExternalLinkage, name, M);
-        jl_init_function(f);
+        jl_init_function(f, ctx.emission_context.TargetTriple);
         f->setAttributes(AttributeList::get(f->getContext(), {attributes, f->getAttributes()}));
     }
     else {
@@ -7010,10 +7016,10 @@ static jl_llvm_functions_t
     else
         funcName << "japi1_";
     const char* unadorned_name = ctx.name;
-#if defined(_OS_LINUX_)
-    if (unadorned_name[0] == '@')
-        unadorned_name++;
-#endif
+    if (ctx.emission_context.TargetTriple.isOSLinux()) {
+        if (unadorned_name[0] == '@')
+            unadorned_name++;
+    }
     funcName << unadorned_name << "_" << jl_atomic_fetch_add(&globalUniqueGeneratedNames, 1);
     declarations.specFunctionObject = funcName.str();
 
@@ -7029,7 +7035,7 @@ static jl_llvm_functions_t
         returninfo = get_specsig_function(ctx, M, declarations.specFunctionObject, lam->specTypes, jlrettype, ctx.is_opaque_closure);
         f = returninfo.decl;
         has_sret = (returninfo.cc == jl_returninfo_t::SRet || returninfo.cc == jl_returninfo_t::Union);
-        jl_init_function(f);
+        jl_init_function(f, ctx.emission_context.TargetTriple);
 
         // common pattern: see if all return statements are an argument in that
         // case the apply-generic call can re-use the original box for the return
@@ -7067,7 +7073,7 @@ static jl_llvm_functions_t
         f = Function::Create(needsparams ? ctx.types().T_jlfuncparams : ctx.types().T_jlfunc,
                              GlobalVariable::ExternalLinkage,
                              declarations.specFunctionObject, M);
-        jl_init_function(f);
+        jl_init_function(f, ctx.emission_context.TargetTriple);
         f->setAttributes(AttributeList::get(ctx.builder.getContext(), {get_func_attrs(ctx.builder.getContext()), f->getAttributes()}));
         returninfo.decl = f;
         declarations.functionObject = needsparams ? "jl_fptr_sparam" : "jl_fptr_args";
@@ -7099,11 +7105,11 @@ static jl_llvm_functions_t
     FnAttrs.addAttribute(Attribute::StackProtectStrong);
 #endif
 
-#ifdef _COMPILER_TSAN_ENABLED_
-    // TODO: enable this only when a argument like `-race` is passed to Julia
-    //       add a macro for no_sanitize_thread
-    FnAttrs.addAttribute(llvm::Attribute::SanitizeThread);
-#endif
+    if (M->getModuleFlag("julia.tsan")) {
+        // TODO: enable this only when a argument like `-race` is passed to Julia
+        //       add a macro for no_sanitize_thread
+        FnAttrs.addAttribute(llvm::Attribute::SanitizeThread);
+    }
 
     // add the optimization level specified for this module, if any
     int optlevel = jl_get_module_optlevel(ctx.module);
@@ -8603,7 +8609,7 @@ void jl_compile_workqueue(
                 Function *preal = emit_tojlinvoke(codeinst, mod, params);
                 protodecl->setLinkage(GlobalVariable::InternalLinkage);
                 //protodecl->setAlwaysInline();
-                jl_init_function(protodecl);
+                jl_init_function(protodecl, params.TargetTriple);
                 size_t nrealargs = jl_nparams(codeinst->def->specTypes); // number of actual arguments being passed
                 // TODO: maybe this can be cached in codeinst->specfptr?
                 emit_cfunc_invalidate(protodecl, proto_cc, proto_return_roots, codeinst->def->specTypes, codeinst->rettype, nrealargs, params, preal);

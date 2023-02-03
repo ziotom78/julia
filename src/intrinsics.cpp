@@ -608,17 +608,17 @@ static jl_cgval_t generic_cast(
     if (!CastInst::castIsValid(Op, from, to))
         return emit_runtime_call(ctx, f, argv, 2);
     if (Op == Instruction::FPExt) {
-#ifdef JL_NEED_FLOATTEMP_VAR
-        // Target platform might carry extra precision.
-        // Force rounding to single precision first. The reason is that it's
-        // fine to keep working in extended precision as long as it's
-        // understood that everything is implicitly rounded to 23 bits,
-        // but if we start looking at more bits we need to actually do the
-        // rounding first instead of carrying around incorrect low bits.
-        Value *jlfloattemp_var = emit_static_alloca(ctx, from->getType());
-        ctx.builder.CreateStore(from, jlfloattemp_var);
-        from  = ctx.builder.CreateLoad(from->getType(), jlfloattemp_var, /*force this to load from the stack*/true);
-#endif
+        if (ctx.emission_context.TargetTriple.getArch() == Triple::x86) {
+            // Target platform might carry extra precision.
+            // Force rounding to single precision first. The reason is that it's
+            // fine to keep working in extended precision as long as it's
+            // understood that everything is implicitly rounded to 23 bits,
+            // but if we start looking at more bits we need to actually do the
+            // rounding first instead of carrying around incorrect low bits.
+            Value *jlfloattemp_var = emit_static_alloca(ctx, from->getType());
+            ctx.builder.CreateStore(from, jlfloattemp_var);
+            from  = ctx.builder.CreateLoad(from->getType(), jlfloattemp_var, /*force this to load from the stack*/true);
+        }
     }
     Value *ans = ctx.builder.CreateCast(Op, from, to);
     if (f == fptosi || f == fptoui)

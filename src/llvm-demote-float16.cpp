@@ -57,25 +57,33 @@ Optional<bool> always_have_fp16() {
 #endif
 }
 
+Optional<bool> always_have_fp16(const Triple &triple) {
+    if (triple.isX86()) {
+        return false;
+    }
+    return {};
+}
+
 namespace {
 
 bool have_fp16(Function &caller) {
-    auto unconditional = always_have_fp16();
+    auto triple = Triple(caller.getParent()->getTargetTriple());
+    auto unconditional = always_have_fp16(triple);
     if (unconditional.hasValue())
         return unconditional.getValue();
 
     Attribute FSAttr = caller.getFnAttribute("target-features");
     StringRef FS =
         FSAttr.isValid() ? FSAttr.getValueAsString() : jl_ExecutionEngine->getTargetFeatureString();
-#if defined(_CPU_AARCH64_)
-    if (FS.find("+fp16fml") != llvm::StringRef::npos || FS.find("+fullfp16") != llvm::StringRef::npos){
-        return true;
+    if (triple.isAArch64()) {
+        if (FS.find("+fp16fml") != llvm::StringRef::npos || FS.find("+fullfp16") != llvm::StringRef::npos){
+            return true;
+        }
+    } else {
+        if (FS.find("+avx512fp16") != llvm::StringRef::npos){
+            return true;
+        }
     }
-#else
-    if (FS.find("+avx512fp16") != llvm::StringRef::npos){
-        return true;
-    }
-#endif
     return false;
 }
 

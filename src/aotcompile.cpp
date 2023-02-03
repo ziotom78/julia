@@ -307,6 +307,10 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
     params.params = cgparams;
     params.imaging = imaging;
     params.external_linkage = _external_linkage;
+    clone.withModuleDo([&params](Module &M) {
+        params.DL = &M.getDataLayout();
+        params.TargetTriple = Triple(M.getTargetTriple());
+    });
     size_t compile_for[] = { jl_typeinf_world, jl_atomic_load_acquire(&jl_world_counter) };
     for (int worlds = 0; worlds < 2; worlds++) {
         params.world = compile_for[worlds];
@@ -1108,6 +1112,10 @@ void jl_get_llvmf_defn_impl(jl_llvmf_dump_t* dump, jl_method_instance_t *mi, siz
         jl_codegen_params_t output(*ctx);
         output.world = world;
         output.params = &params;
+        m.withModuleDo([&output](Module &M) {
+            output.DL = &M.getDataLayout();
+            output.TargetTriple = Triple(M.getTargetTriple());
+        });
         auto decls = jl_emit_code(m, mi, src, jlrettype, output);
         JL_UNLOCK(&jl_codegen_lock); // Might GC
 

@@ -57,45 +57,46 @@ GlobalVariable *jl_emit_RTLD_DEFAULT_var(Module *M)
 static bool runtime_sym_gvs(jl_codectx_t &ctx, const char *f_lib, const char *f_name,
                             GlobalVariable *&lib, GlobalVariable *&sym)
 {
-    auto M = &ctx.emission_context.shared_module(*jl_Module);
+    auto M = &ctx.emission_context.shared_module();
     bool runtime_lib = false;
     GlobalVariable *libptrgv;
-    jl_codegen_params_t::SymMapGV *symMap;
-#ifdef _OS_WINDOWS_
-    if ((intptr_t)f_lib == (intptr_t)JL_EXE_LIBNAME) {
-        libptrgv = prepare_global_in(M, jlexe_var);
-        symMap = &ctx.emission_context.symMapExe;
+    jl_codegen_params_t::SymMapGV *symMap = nullptr;
+    if (ctx.emission_context.TargetTriple.isOSWindows()) {
+        if ((intptr_t)f_lib == (intptr_t)JL_EXE_LIBNAME) {
+            libptrgv = prepare_global_in(M, jlexe_var);
+            symMap = &ctx.emission_context.symMapExe;
+        }
+        else if ((intptr_t)f_lib == (intptr_t)JL_LIBJULIA_INTERNAL_DL_LIBNAME) {
+            libptrgv = prepare_global_in(M, jldlli_var);
+            symMap = &ctx.emission_context.symMapDlli;
+        }
+        else if ((intptr_t)f_lib == (intptr_t)JL_LIBJULIA_DL_LIBNAME) {
+            libptrgv = prepare_global_in(M, jldll_var);
+            symMap = &ctx.emission_context.symMapDll;
+        }
     }
-    else if ((intptr_t)f_lib == (intptr_t)JL_LIBJULIA_INTERNAL_DL_LIBNAME) {
-        libptrgv = prepare_global_in(M, jldlli_var);
-        symMap = &ctx.emission_context.symMapDlli;
-    }
-    else if ((intptr_t)f_lib == (intptr_t)JL_LIBJULIA_DL_LIBNAME) {
-        libptrgv = prepare_global_in(M, jldll_var);
-        symMap = &ctx.emission_context.symMapDll;
-    }
-    else
-#endif
-    if (f_lib == NULL) {
-        libptrgv = jl_emit_RTLD_DEFAULT_var(M);
-        symMap = &ctx.emission_context.symMapDefault;
-    }
-    else {
-        std::string name = "ccalllib_";
-        name += llvm::sys::path::filename(f_lib);
-        name += std::to_string(jl_atomic_fetch_add(&globalUniqueGeneratedNames, 1));
-        runtime_lib = true;
-        auto &libgv = ctx.emission_context.libMapGV[f_lib];
-        if (libgv.first == NULL) {
-            libptrgv = new GlobalVariable(*M, getInt8PtrTy(M->getContext()), false,
-                                          GlobalVariable::ExternalLinkage,
-                                          Constant::getNullValue(getInt8PtrTy(M->getContext())), name);
-            libgv.first = libptrgv;
+    if (!symMap) {
+        if (f_lib == NULL) {
+            libptrgv = jl_emit_RTLD_DEFAULT_var(M);
+            symMap = &ctx.emission_context.symMapDefault;
         }
         else {
-            libptrgv = libgv.first;
+            std::string name = "ccalllib_";
+            name += llvm::sys::path::filename(f_lib);
+            name += std::to_string(jl_atomic_fetch_add(&globalUniqueGeneratedNames, 1));
+            runtime_lib = true;
+            auto &libgv = ctx.emission_context.libMapGV[f_lib];
+            if (libgv.first == NULL) {
+                libptrgv = new GlobalVariable(*M, getInt8PtrTy(M->getContext()), false,
+                                            GlobalVariable::ExternalLinkage,
+                                            Constant::getNullValue(getInt8PtrTy(M->getContext())), name);
+                libgv.first = libptrgv;
+            }
+            else {
+                libptrgv = libgv.first;
+            }
+            symMap = &libgv.second;
         }
-        symMap = &libgv.second;
     }
 
     GlobalVariable *&llvmgv = (*symMap)[f_name];
@@ -236,7 +237,7 @@ static GlobalVariable *emit_plt_thunk(
         bool runtime_lib)
 {
     ++PLTThunks;
-    auto M = &ctx.emission_context.shared_module(*jl_Module);
+    auto M = &ctx.emission_context.shared_module();
     PointerType *funcptype = PointerType::get(functype, 0);
     libptrgv = prepare_global_in(M, libptrgv);
     llvmgv = prepare_global_in(M, llvmgv);
@@ -280,13 +281,14 @@ static GlobalVariable *emit_plt_thunk(
         // musttail support is very bad on ARM, PPC, PPC64 (as of LLVM 3.9)
         // Known failures includes vararg (not needed here) and sret.
 
-#if (defined(_CPU_X86_) || defined(_CPU_X86_64_) || (defined(_CPU_AARCH64_) && !defined(_OS_DARWIN_)))
+        auto &triple = ctx.emission_context.TargetTriple;
         // Ref https://bugs.llvm.org/show_bug.cgi?id=47058
         // LLVM, as of 10.0.1 emits wrong/worse code when musttail is set
         // Apple silicon macs give an LLVM ERROR if musttail is set here #44107.
-        if (!attrs.hasAttrSomewhere(Attribute::ByVal))
-            ret->setTailCallKind(CallInst::TCK_MustTail);
-#endif
+        if (triple.isX86() || (triple.isAArch64() || !triple.isOSDarwin()))
+            if (!attrs.hasAttrSomewhere(Attribute::ByVal))
+                ret->setTailCallKind(CallInst::TCK_MustTail);
+
         if (functype->getReturnType() == getVoidTy(irbuilder.getContext())) {
             irbuilder.CreateRetVoid();
         }
@@ -1101,9 +1103,9 @@ std::string generate_func_sig(const char *fname)
 #else
             AttrBuilder retattrs;
 #endif
-#if !defined(_OS_WINDOWS_) // llvm used to use the old mingw ABI, skipping this marking works around that difference
-            retattrs.addStructRetAttr(lrt);
-#endif
+            if (ctx->TargetTriple.isOSWindows()) { // llvm used to use the old mingw ABI, skipping this marking works around that difference
+                retattrs.addStructRetAttr(lrt);
+            }
             retattrs.addAttribute(Attribute::NoAlias);
             paramattrs.push_back(AttributeSet::get(LLVMCtx, retattrs));
             fargt_sig.push_back(PointerType::get(lrt, 0));
@@ -1511,24 +1513,29 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
         // Keep in sync with the julia_threads.h version
         assert(lrt == getVoidTy(ctx.builder.getContext()));
         assert(!isVa && !llvmcall && nccallargs == 0);
-#ifdef __MIC__
-        // TODO
-#elif defined(_CPU_X86_64_) || defined(_CPU_X86_)  /* !__MIC__ */
-        auto pauseinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "pause",
+        const auto &triple = ctx.emission_context.TargetTriple;
+#ifndef __MIC__
+        if (triple.isX86()) {
+            auto pauseinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "pause",
+                                                "~{memory}", true);
+            ctx.builder.CreateCall(pauseinst);
+            JL_GC_POP();
+            return ghostValue(ctx, jl_nothing_type);
+        }
+        // subarch is defined backwards, so v7 < v6
+        if (triple.isAArch64() || (triple.isARM() &&
+                (triple.getSubArch() != Triple::SubArchType::NoSubArch &&
+                    triple.getSubArch() < Triple::SubArchType::ARMSubArch_v6))) {
+            auto wfeinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "wfe",
                                                "~{memory}", true);
-        ctx.builder.CreateCall(pauseinst);
-        JL_GC_POP();
-        return ghostValue(ctx, jl_nothing_type);
-#elif defined(_CPU_AARCH64_) || (defined(_CPU_ARM_) && __ARM_ARCH >= 7)
-        auto wfeinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "wfe",
-                                             "~{memory}", true);
-        ctx.builder.CreateCall(wfeinst);
-        JL_GC_POP();
-        return ghostValue(ctx, jl_nothing_type);
-#else
+            ctx.builder.CreateCall(wfeinst);
+            JL_GC_POP();
+            return ghostValue(ctx, jl_nothing_type);
+        }
         JL_GC_POP();
         return ghostValue(ctx, jl_nothing_type);
 #endif
+    //TODO MIC?
     }
     else if (is_libjulia_func(jl_cpu_wake)) {
         ++CCALL_STAT(jl_cpu_wake);
@@ -1538,12 +1545,18 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
 #if JL_CPU_WAKE_NOOP == 1
         JL_GC_POP();
         return ghostValue(ctx, jl_nothing_type);
-#elif defined(_CPU_AARCH64_) || (defined(_CPU_ARM_) && __ARM_ARCH >= 7)
-        auto sevinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "sev",
-                                             "~{memory}", true);
-        ctx.builder.CreateCall(sevinst);
-        JL_GC_POP();
-        return ghostValue(ctx, jl_nothing_type);
+#else
+        // subarch is defined backwards, so v7 < v6
+        const auto &triple = ctx.emission_context.TargetTriple;
+        if (triple.isAArch64() || (triple.isARM() &&
+                (triple.getSubArch() != Triple::SubArchType::NoSubArch &&
+                    triple.getSubArch() < Triple::SubArchType::ARMSubArch_v6))) {
+            auto sevinst = InlineAsm::get(FunctionType::get(getVoidTy(ctx.builder.getContext()), false), "sev",
+                                                "~{memory}", true);
+            ctx.builder.CreateCall(sevinst);
+            JL_GC_POP();
+            return ghostValue(ctx, jl_nothing_type);
+        }
 #endif
     }
     else if (is_libjulia_func(jl_gc_safepoint)) {

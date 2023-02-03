@@ -197,6 +197,8 @@ static jl_callptr_t _jl_compile_codeinst(
     jl_codegen_params_t params(std::move(context)); // Locks the context
     params.cache = true;
     params.world = world;
+    params.DL = &jl_ExecutionEngine->getDataLayout();
+    params.TargetTriple = jl_ExecutionEngine->getTargetTriple();
     jl_workqueue_t emitted;
     {
         orc::ThreadSafeModule result_m =
@@ -322,8 +324,11 @@ int jl_compile_extern_c_impl(LLVMOrcThreadSafeModuleRef llvmmod, void *p, void *
     }
     JL_LOCK(&jl_codegen_lock);
     jl_codegen_params_t params(into->getContext());
-    if (pparams == NULL)
+    if (pparams == NULL) {
+        params.DL = &jl_ExecutionEngine->getDataLayout();
+        params.TargetTriple = jl_ExecutionEngine->getTargetTriple();
         pparams = &params;
+    }
     assert(pparams->tsctx.getContext() == into->getContext().getContext());
     const char *name = jl_generate_ccallable(wrap(into), sysimg, declrt, sigt, *pparams);
     bool success = true;
@@ -1713,24 +1718,25 @@ TargetIRAnalysis JuliaOJIT::getTargetIRAnalysis() const {
 }
 
 static void jl_decorate_module(Module &M) {
-#if defined(_CPU_X86_64_) && defined(_OS_WINDOWS_)
-    // Add special values used by debuginfo to build the UnwindData table registration for Win64
-    // This used to be GV, but with https://reviews.llvm.org/D100944 we no longer can emit GV into `.text`
-    // TODO: The data is set in debuginfo.cpp but it should be okay to actually emit it here.
-    M.appendModuleInlineAsm("\
-    .section .text                  \n\
-    .type   __UnwindData,@object    \n\
-    .p2align        2, 0x90         \n\
-    __UnwindData:                   \n\
-        .zero   12                  \n\
-        .size   __UnwindData, 12    \n\
-                                    \n\
-        .type   __catchjmp,@object  \n\
-        .p2align        2, 0x90     \n\
-    __catchjmp:                     \n\
-        .zero   12                  \n\
-        .size   __catchjmp, 12");
-#endif
+    Triple triple(M.getTargetTriple());
+    if (triple.isOSWindows() && triple.getArch() == Triple::x86_64) {
+        // Add special values used by debuginfo to build the UnwindData table registration for Win64
+        // This used to be GV, but with https://reviews.llvm.org/D100944 we no longer can emit GV into `.text`
+        // TODO: The data is set in debuginfo.cpp but it should be okay to actually emit it here.
+        M.appendModuleInlineAsm("\
+        .section .text                  \n\
+        .type   __UnwindData,@object    \n\
+        .p2align        2, 0x90         \n\
+        __UnwindData:                   \n\
+            .zero   12                  \n\
+            .size   __UnwindData, 12    \n\
+                                        \n\
+            .type   __catchjmp,@object  \n\
+            .p2align        2, 0x90     \n\
+        __catchjmp:                     \n\
+            .zero   12                  \n\
+            .size   __catchjmp, 12");
+    }
 }
 
 // Implements Tarjan's SCC (strongly connected components) algorithm, simplified to remove the count variable
