@@ -28,10 +28,16 @@ for path in eachline(`git ls-files -- $patterns`)
     line_err(msg) = push!(errors, (path, lineno, msg))
 
     isfile(path) || continue
+
+    prohibit_tab = endswith(path, ".jl") &&
+                  !endswith(path, joinpath("test", "syntax.jl")) &&
+                  !endswith(path, joinpath("test", "triplequote.jl"))
+
     for line in eachline(path, keep=true)
         lineno += 1
         contains(line, '\r')   && file_err("non-UNIX line endings")
         contains(line, '\ua0') && line_err("non-breaking space")
+        prohibit_tab && contains(line, '\t') && line_err("tab")
         endswith(line, '\n')   || line_err("no trailing newline")
         line = chomp(line)
         endswith(line, r"\s")  && line_err("trailing whitespace")
