@@ -767,7 +767,7 @@ end
 
 function enq_work(t::Task)
     (t._state === task_state_runnable && t.queue === nothing) || error("schedule: Task not runnable")
-    if t.sticky || Threads.threadpoolsize() == 1
+    if t.sticky || Threads.maxthreadid() == 1
         tid = Threads.threadid(t)
         if tid == 0
             # Issue #41324
