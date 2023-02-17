@@ -27,7 +27,7 @@ Build system changes
 New library functions
 ---------------------
 * `tanpi` is now defined. It computes tan(πx) more accurately than `tan(pi*x)` ([#48575]).
-* `copyuntil(out, io, delim)` copies data into an `out` stream` until `delim` ([#48273]).
+* `copyuntil(out, io, delim)` and `copyline(out, io)` copy data into an `out::IO` stream ([#48273]).
 
 New library features
 --------------------
