@@ -2236,6 +2236,19 @@
          (gensy))
         (else (make-ssavalue))))
 
+(define (extract-dest-prop field lhs)
+  (cond ((symbol? field) (list field field))
+        ((and (pair? field) (eq? (car field) '|::|))
+         (extract-prop (cadr field)))
+        ((globalref? field)
+         (list field (caddr field)))
+        ((outerref? field)
+         (list field (cadr field)))
+        ((and (pair? field) (eq? (car field) 'renamed))
+         (cdr field))
+        (else
+         (error (string "invalid assignment location \"" (deparse `(tuple ,lhs)) "\"")))))
+
 (define (expand-property-destruct lhs x)
   (if (not (length= lhs 1))
       (error (string "invalid assignment location \"" (deparse `(tuple ,lhs)) "\"")))
@@ -2246,12 +2259,8 @@
        ,@ini
        ,@(map
            (lambda (field)
-             (let ((prop (cond ((symbol? field) field)
-                               ((and (pair? field) (eq? (car field) '|::|) (symbol? (cadr field)))
-                                (cadr field))
-                               (else
-                                (error (string "invalid assignment location \"" (deparse `(tuple ,lhs)) "\""))))))
-               (expand-forms `(= ,field (call (top getproperty) ,xx (quote ,prop))))))
+             (let ((dest-prop (extract-dest-prop field lhs)))
+               (expand-forms `(= ,(car dest-prop) (call (top getproperty) ,xx (quote ,(cadr dest-prop)))))))
            lhss)
        (unnecessary ,xx))))
 
