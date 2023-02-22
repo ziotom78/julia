@@ -1297,6 +1297,25 @@ JuliaOJIT::JuliaOJIT()
 #else
         NULL;
 #endif
+
+    const char *const libgcc =
+#if defined(_OS_LINUX_) || defined(_OS_FREEBSD_)
+        "libgcc_s.so.1";
+#elif defined(_OS_WINDOWS_)
+        "libgcc_s_seh-1.dll";
+#else
+        NULL;
+#endif
+    if (libgcc) {
+    void *libgcc_hdl = jl_load_dynamic_library(libgcc, JL_RTLD_LOCAL, 0);
+    if (libgcc_hdl != NULL) {
+        GlobalJD.addGenerator(
+            cantFail(orc::DynamicLibrarySearchGenerator::Load(
+                libgcc,
+                DL.getGlobalPrefix())));
+    }
+    }
+
     if (libatomic) {
         static void *atomic_hdl = jl_load_dynamic_library(libatomic, JL_RTLD_LOCAL, 0);
         if (atomic_hdl != NULL) {
