@@ -88,7 +88,18 @@ else
 $(eval $(call copy_csl,$(call versioned_libname,libpthread,0)))
 endif
 
-get-csl:
+COMPILER_HASH:=$(shell echo "$(CC_VERSION_STRING)" | shasum | awk '{ print $$1}')
+scratch/check-f16-abi-$(COMPILER_HASH):
+ifeq ($(USE_BINARYBUILDER_CSL),0)
+	@if ! $(CC) $(JULIAHOME)/contrib/f16_abi_check.c -fsyntax-only; then \
+	echo "The system libraries must use the _Float16 ABI GCC>=12 Clang >=15" >&2; \
+	exit 1; \
+	fi
+	echo "$(CC_VERSION_STRING)" > $@
+endif
+
+install-csl: scratch/check-f16-abi-$(COMPILER_HASH)
+
 clean-csl:
 	-rm -f $(build_shlibdir)/libgfortran*$(SHLIB_EXT)*
 	-rm -f $(build_shlibdir)/libquadmath*$(SHLIB_EXT)*

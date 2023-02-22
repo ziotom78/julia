@@ -656,7 +656,9 @@ void jl_dump_native_impl(void *native_code,
             // We would like to emit an alias or an weakref alias to redirect these symbols
             // but LLVM doesn't let us emit a GlobalAlias to a declaration...
             // So for now we inject a definition of these functions that calls our runtime
-            // functions. We do so after optimization to avoid cloning these functions.
+            // functions. We do so after optimization to avoid cloning these functions
+            
+#if !(JL_LLVM_VERSION >= 15000 && defined(_CPU_X86_64_))
             injectCRTAlias(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
                     FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
             injectCRTAlias(M, "__extendhfsf2", "julia__gnu_h2f_ieee",
@@ -667,7 +669,7 @@ void jl_dump_native_impl(void *native_code,
                     FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
             injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
                     FunctionType::get(Type::getHalfTy(Context), { Type::getDoubleTy(Context) }, false));
-
+#endif
 #if defined(_OS_WINDOWS_)
             // Windows expect that the function `_DllMainStartup` is present in an dll.
             // Normal compilers use something like Zig's crtdll.c instead we provide a
