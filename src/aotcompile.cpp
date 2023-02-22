@@ -507,7 +507,7 @@ static void reportWriterError(const ErrorInfoBase &E)
     std::string err = E.message();
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
 }
-
+#if !(JL_LLVM_VERSION >= 15000)
 static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
 {
     Function *target = M.getFunction(alias);
@@ -524,7 +524,7 @@ static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionT
     auto val = builder.CreateCall(target, CallArgs);
     builder.CreateRet(val);
 }
-
+#endif
 
 // takes the running content that has collected in the shadow module and dump it to disk
 // this builds the object file portion of the sysimage files for fast startup
@@ -657,8 +657,8 @@ void jl_dump_native_impl(void *native_code,
             // but LLVM doesn't let us emit a GlobalAlias to a declaration...
             // So for now we inject a definition of these functions that calls our runtime
             // functions. We do so after optimization to avoid cloning these functions
-            
-#if !(JL_LLVM_VERSION >= 15000 && defined(_CPU_X86_64_))
+
+#if !(JL_LLVM_VERSION >= 15000)
             injectCRTAlias(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
                     FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
             injectCRTAlias(M, "__extendhfsf2", "julia__gnu_h2f_ieee",

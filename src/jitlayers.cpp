@@ -1312,7 +1312,7 @@ JuliaOJIT::JuliaOJIT()
     }
 
     JD.addToLinkOrder(GlobalJD, orc::JITDylibLookupFlags::MatchExportedSymbolsOnly);
-#if !(JL_LLVM_VERSION >= 15000 && defined(_CPU_X86_64_))
+#if !(JL_LLVM_VERSION >= 15000)
     orc::SymbolAliasMap jl_crt = {
         { mangle("__gnu_h2f_ieee"), { mangle("julia__gnu_h2f_ieee"), JITSymbolFlags::Exported } },
         { mangle("__extendhfsf2"),  { mangle("julia__gnu_h2f_ieee"), JITSymbolFlags::Exported } },
