@@ -1301,8 +1301,10 @@ JuliaOJIT::JuliaOJIT()
     const char *const libgcc =
 #if defined(_OS_LINUX_) || defined(_OS_FREEBSD_)
         "libgcc_s.so.1";
-#elif defined(_OS_WINDOWS_)
+#elif defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)
         "libgcc_s_seh-1.dll";
+#elif defined(_OS_WINDOWS_) && defined(_CPU_X86_)
+        libgcc_s_sjlj-1.dll;
 #else
         NULL;
 #endif
