@@ -1311,6 +1311,7 @@ JuliaOJIT::JuliaOJIT()
     if (libgcc) {
     void *libgcc_hdl = jl_load_dynamic_library(libgcc, JL_RTLD_LOCAL, 0);
     if (libgcc_hdl != NULL) {
+        jl_printf(JL_STDOUT,"loaded libgcc into the JIT");
         GlobalJD.addGenerator(
             cantFail(orc::DynamicLibrarySearchGenerator::Load(
                 libgcc,
