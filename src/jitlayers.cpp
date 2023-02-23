@@ -2,6 +2,7 @@
 
 #include "llvm-version.h"
 #include "platform.h"
+#include "llvm/ExecutionEngine/Orc/Core.h"
 #include <stdint.h>
 #include <sstream>
 
@@ -1225,6 +1226,7 @@ JuliaOJIT::JuliaOJIT()
 #endif
     GlobalJD(ES.createBareJITDylib("JuliaGlobals")),
     JD(ES.createBareJITDylib("JuliaOJIT")),
+    libgccJD(ES.createBareJITDylib("Julialibgcc")),
     ContextPool([](){
         auto ctx = std::make_unique<LLVMContext>();
 #ifdef JL_LLVM_OPAQUE_POINTERS
@@ -1312,14 +1314,10 @@ JuliaOJIT::JuliaOJIT()
     void *libgcc_hdl = jl_load_dynamic_library(libgcc, JL_RTLD_LOCAL, 0);
     if (libgcc_hdl != NULL) {
         jl_printf(JL_STDOUT,"loaded libgcc into the JIT");
-        JD.addGenerator(
+        libgccJD.addGenerator(
             cantFail(orc::DynamicLibrarySearchGenerator::Load(
                 libgcc,
-                DL.getGlobalPrefix(),
-                [&](const orc::SymbolStringPtr &S) {
-                        const char *const prefix = "_";
-                        return (*S).startswith(prefix);
-                  })));
+                DL.getGlobalPrefix())));
     }
     }
 
@@ -1336,7 +1334,7 @@ JuliaOJIT::JuliaOJIT()
                   })));
         }
     }
-
+    JD.addToLinkOrder(libgccJD, orc::JITDylibLookupFlags::MatchAllSymbols);
     JD.addToLinkOrder(GlobalJD, orc::JITDylibLookupFlags::MatchExportedSymbolsOnly);
 #if !(JL_LLVM_VERSION >= 15000)
     orc::SymbolAliasMap jl_crt = {

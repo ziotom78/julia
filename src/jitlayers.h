@@ -508,7 +508,7 @@ private:
     orc::ExecutionSession ES;
     orc::JITDylib &GlobalJD;
     orc::JITDylib &JD;
-
+    orc::JITDylib &libgccJD;
     //Map and inc are guarded by RLST_mutex
     std::mutex RLST_mutex{};
     int RLST_inc = 0;
