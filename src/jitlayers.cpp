@@ -1304,7 +1304,7 @@ JuliaOJIT::JuliaOJIT()
 #elif defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)
         "libgcc_s_seh-1.dll";
 #elif defined(_OS_WINDOWS_) && defined(_CPU_X86_)
-        libgcc_s_sjlj-1.dll;
+        "libgcc_s_sjlj-1.dll";
 #else
         NULL;
 #endif
