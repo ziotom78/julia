@@ -1315,7 +1315,11 @@ JuliaOJIT::JuliaOJIT()
         GlobalJD.addGenerator(
             cantFail(orc::DynamicLibrarySearchGenerator::Load(
                 libgcc,
-                DL.getGlobalPrefix())));
+                DL.getGlobalPrefix(),
+                [&](const orc::SymbolStringPtr &S) {
+                        const char *const prefix = "_";
+                        return (*S).startswith(prefix);
+                  })));
     }
     }
 
